@@ -20,26 +20,26 @@ enum State {
 
 
 // This struct makes it easier to connect variables to simple numeric controls on the settings page on the display and store them
-struct NumericSetting{
+struct NumericSetting {
   NexNumber *nexNumber;
   int eeAddress;
 
-  NumericSetting(NexNumber* nexN, int addrIndex){
-     nexNumber = nexN;
-     eeAddress = addrIndex * EEPROM_CHUNK_SIZE;
+  NumericSetting(NexNumber* nexN, int addrIndex) {
+    nexNumber = nexN;
+    eeAddress = addrIndex * EEPROM_CHUNK_SIZE;
   }
 
-  void setVal(int newValue){
+  void setVal(int newValue) {
     //value = newValue;
     nexNumber->setValue(newValue);
     EEPROM.put(eeAddress, newValue);
   }
 
-  int getVal(){
+  int getVal() {
     //return value;
     int val;
     EEPROM.get(eeAddress, val);
-    return(val);
+    return (val);
   }
 };
 
@@ -79,44 +79,33 @@ float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-typedef struct {
+struct TimedReading {
   int val;
   unsigned long takenAt;
-} TimedReading;
+};
 
 
-struct TempGrapher {
-  static const unsigned long WAVEFORM_TIME_INTERVAL = 10 * 1000UL; // 10 seconds
-  static const int WAVEFORM_COL_WIDTH = 48; //px
-  static const int WAVEFORM_COL_NUM = 6;
-
-  static const int WAVEFORM_HEIGHT = 136; //px
-  static const int WAVEFORM_MIN_TEMP = 20;
-  static const int WAVEFORM_MAX_TEMP = 40;
-
+struct Grapher {
   static const int MIN_READING_INTERVAL = 5; //minutes
 
-  static long latestReadingTakenAt;
-
   // We will take water temperature readings at most every 5 minutes and want to store 12hrs of data so we will need at most (60 / 5) * 12 = 144 readings
-  static const int MAX_READINGS = (60 / MIN_READING_INTERVAL) * 12;
+  static const int MAX_READINGS = 200;//(60 / MIN_READING_INTERVAL) * 12;
 
-  int channel;
-  
   int readingsTaken = 0;
   TimedReading readings[MAX_READINGS];
 
-  TempGrapher(int chnl){
+  int channel;
+
+  Grapher(int chnl) {
     channel = chnl;
   }
 
-  void registerTemperature(TimedReading reading) {
+  void registerData(TimedReading reading) {
     long lastReadingTakenAt = readingsTaken > 0 ? readings[readingsTaken - 1].takenAt : 0;
     long ellapsedTime = millis() - lastReadingTakenAt;
 
-    if (ellapsedTime > 5000 || readingsTaken == 0) {
-    //if (ellapsedTime > minToMillis(MIN_READING_INTERVAL) || readingsTaken == 0) {
-      TempGrapher::latestReadingTakenAt = millis();
+    if (ellapsedTime > 400 || readingsTaken == 0) {
+      //if (ellapsedTime > minToMillis(MIN_READING_INTERVAL) || readingsTaken == 0) {
       if (readingsTaken < MAX_READINGS) {
         //Store new reading on next available space on array
         readings[readingsTaken] = reading;
@@ -129,25 +118,13 @@ struct TempGrapher {
         }
         readings[MAX_READINGS - 1] = reading;
       }
-      displayWaveform();
     }
   }
 
-  void displayWaveform() {
+  void displayWaveform(unsigned long graphStartTime, unsigned long waveformTimeWidth, int waveformWidth) {
     if (readingsTaken == 0) return;
 
-    unsigned long graphStartTime;
-    unsigned long startTimeRoundedDown = floor(readings[0].takenAt / (float)WAVEFORM_TIME_INTERVAL) * WAVEFORM_TIME_INTERVAL;
-
-    if (latestReadingTakenAt - startTimeRoundedDown > WAVEFORM_TIME_INTERVAL * WAVEFORM_COL_NUM) {
-      unsigned long graphEndTime = ceil(latestReadingTakenAt / (float)WAVEFORM_TIME_INTERVAL) * WAVEFORM_TIME_INTERVAL; //round up to the nearest graph time interval
-      graphStartTime = graphEndTime - WAVEFORM_COL_NUM * WAVEFORM_TIME_INTERVAL;
-    }
-    else {
-      graphStartTime = floor(readings[0].takenAt / (float)WAVEFORM_TIME_INTERVAL) * WAVEFORM_TIME_INTERVAL; //round down to the nearest graph time interval
-    }
-
-    long numDataPoints = ((readings[readingsTaken - 1].takenAt - graphStartTime) / (float) WAVEFORM_TIME_INTERVAL) * WAVEFORM_COL_WIDTH;
+    long numDataPoints = ((readings[readingsTaken - 1].takenAt - graphStartTime) / (float) waveformTimeWidth) * waveformWidth;
 
     if (numDataPoints == 0) {
       Serial.println("No Data Points");
@@ -157,7 +134,7 @@ struct TempGrapher {
     //Interpolate over current teperature readings to produce regular-intervaled data points
     int dataPoints[numDataPoints];
     for (int i = 0; i < numDataPoints; i++) {
-      unsigned long pointTime = graphStartTime + ((i / (float)WAVEFORM_COL_WIDTH) * WAVEFORM_TIME_INTERVAL);
+      unsigned long pointTime = graphStartTime + ((i / (float)waveformWidth) * waveformTimeWidth);
 
       bool debug_found = false;
       if (readings[0].takenAt >= pointTime) {
@@ -170,10 +147,10 @@ struct TempGrapher {
         for (int j = 0; j < readingsTaken - 1; j++) {
           if (readings[j + 1].takenAt >= pointTime) {
             //Interpolate dataPoint value at pointTime using closest temp readings
-            float interp = (pointTime - readings[j].takenAt) / (float) (readings[j + 1].takenAt - readings[j].takenAt);
-            float val = ((readings[j + 1].val - readings[j].val) * interp) + readings[j].val;
+            float val = interpolateData(pointTime, readings[j], readings[j + 1]);
 
-            val = fmap(val, WAVEFORM_MIN_TEMP, WAVEFORM_MAX_TEMP, 0, WAVEFORM_HEIGHT);
+            //Scale and clip value
+            val = scaleData(val);
             val = min(max(val, 1), 136);
             dataPoints[i] = (int) val;
 
@@ -187,15 +164,17 @@ struct TempGrapher {
       }
     }
 
+    //parse dataPoints into string
     char dataString[2 * numDataPoints + 1];
     dataString[0] = 0;
     for (int i = 0; i < numDataPoints; i++) {
       strcat(dataString, (char*) &dataPoints[i]);
     }
-    
+
+    //Clear waveform channel instruction
     char clearString[20];
     sprintf(clearString, "cle 2,%d\xFF\xFF\xFF", channel);
-    
+
     int digits = numDataPoints >= 100 ? 3 : (numDataPoints >= 10 ? 2 : 1);
     char instructionString[21 + digits];
     sprintf(instructionString, "addt 2,%d,%d\xFF\xFF\xFF", channel, numDataPoints);
@@ -206,11 +185,88 @@ struct TempGrapher {
     Serial2.write(instructionString);
     delay(5);
     Serial2.write(dataString);
+    delay(500);
+  }
 
+  virtual float interpolateData(unsigned long t, TimedReading before, TimedReading after) = 0;
+  virtual int scaleData(float val) = 0;
+};
+
+struct TempGrapher : Grapher {
+  static const int WAVEFORM_MIN_TEMP = 20;
+  static const int WAVEFORM_MAX_TEMP = 40;
+  static const int WAVEFORM_HEIGHT = 136; //px
+
+  TempGrapher(int chnl) : Grapher(chnl) {}
+
+  float interpolateData(unsigned long t, TimedReading before, TimedReading after) {
+    float interp = (t - before.takenAt) / (float) (after.takenAt - before.takenAt);
+    return ((after.val - before.val) * interp) + before.val;
+  }
+
+  int scaleData(float val) {
+    return fmap(val, WAVEFORM_MIN_TEMP, WAVEFORM_MAX_TEMP, 0, WAVEFORM_HEIGHT);
+  }
+};
+
+struct PowerGrapher : Grapher {
+  static const int ON_HEIGHT = 85;
+  static const int OFF_HEIGHT = 51;
+
+  PowerGrapher(int chnl) : Grapher(chnl) {}
+
+  float interpolateData(unsigned long t, TimedReading before, TimedReading after) {
+    return t - before.takenAt < after.takenAt - t ? before.val : after.val;
+  }
+
+  int scaleData(float val) {
+    return val == 1 ? ON_HEIGHT : OFF_HEIGHT;
+  }
+};
+
+
+struct Waveform {
+  static const unsigned long WAVEFORM_TIME_INTERVAL = 10 * 1000UL; // 10 seconds
+  static const unsigned long WAVEFORM_TIME_WIDTH = 60 * 1000UL; //60 seconds
+  static const int WAVEFORM_WIDTH = 288; //px
+
+  static const int NUM_GRAPHERS = 3;
+
+  Grapher *graphers[NUM_GRAPHERS];
+
+  void updateWaveform() {
+
+    long earliestReading = 2147483647L; //maximum value for long
+    long latestReading = 0;
+
+
+    for (int i = 0; i < NUM_GRAPHERS; i++) {
+      if (graphers[i]->readingsTaken > 0) {
+        earliestReading = min(earliestReading, graphers[i]->readings[0].takenAt);
+        latestReading = max(latestReading, graphers[i]->readings[graphers[i]->readingsTaken - 1].takenAt);
+      }
+    }
+
+    if (earliestReading == 0) return; // stop if there arent any readings yet
+
+    unsigned long graphStartTime = 12;
+    unsigned long earliestReadingRoundedDown = floor(earliestReading / (float)WAVEFORM_TIME_INTERVAL) * WAVEFORM_TIME_INTERVAL; //round down to the nearest graph time interval
+
+    if (latestReading - earliestReadingRoundedDown > WAVEFORM_TIME_WIDTH) {
+      unsigned long graphEndTime = ceil(latestReading / (float)WAVEFORM_TIME_INTERVAL) * WAVEFORM_TIME_INTERVAL; //round up to the nearest graph time interval
+      graphStartTime = graphEndTime - WAVEFORM_TIME_WIDTH;
+    }
+    else {
+      graphStartTime = earliestReadingRoundedDown;
+    }
+
+    // Display individual graphs
+    for (Grapher *grapher : graphers) {
+      grapher->displayWaveform(graphStartTime, WAVEFORM_TIME_WIDTH, WAVEFORM_WIDTH);
+    }
   }
 
 };
-long TempGrapher::latestReadingTakenAt = -1;
 
 
 // Nextion pages
@@ -359,13 +415,19 @@ struct ChangeListener_base *changeListenList[] = {
 
 TempGrapher waterTempGrapher = TempGrapher(0);
 TempGrapher solarTempGrapher = TempGrapher(1);
+PowerGrapher solarOnGrapher = PowerGrapher(2);
+Waveform waveform = Waveform();
 
 
 void setup() {
   Serial.begin(9600);
-  
-//  fetchSettings();
-  
+
+
+  waveform.graphers[0] = &waterTempGrapher;
+  waveform.graphers[1] = &solarTempGrapher;
+  waveform.graphers[2] = &solarOnGrapher;
+
+
   nexInit();
 
   //attach ui component press/release callback functions
@@ -404,10 +466,18 @@ void setup() {
   updatePage1(NULL);
   updatePage3(NULL);
   updatePage4(NULL);
+
+  //Clear waveform
+  Serial2.write("cle 2,0\xFF\xFF\xFF");
+  delay(50);
+  Serial2.write("cle 2,1\xFF\xFF\xFF");
+  delay(50);
+  Serial2.write("cle 2,2\xFF\xFF\xFF");
 }
 
 
 void loop() {
+
   nexLoop(nex_listen_list);
 
   updateSolarTemp();
@@ -454,6 +524,7 @@ void loop() {
       }
 
       pumpOn = false;
+      solarOn = false;
 
       timeEllapsed = millis() - timerStartedAt;
       //TODO UNCOMMENT ON PRODUCTION
@@ -521,12 +592,24 @@ void loop() {
   }
 
 
+  TimedReading solarOnReading = {solarOn, millis()};
+  solarOnGrapher.registerData(solarOnReading);
+
   //Listen for changes to trigger display updates and update change listeners
   for (ChangeListener_base *cl : changeListenList) {
     if (cl->changed()) {
       cl->actionOnChange();
     }
     cl->updateValue();
+  }
+
+
+  // Update waveform
+  static long waveformLastUpdatedAt = 0;
+  long ellapsedTime = millis() - waveformLastUpdatedAt;
+  if (ellapsedTime > 5000 || waveformLastUpdatedAt == 0) {
+    waveform.updateWaveform();
+    waveformLastUpdatedAt = millis();
   }
 
   delay(50);
@@ -539,9 +622,9 @@ void updateWaterTemp() {
   int val = analogRead(1);
   waterTemp = map(val, 0, 1023, 0, 50);
   waterTempRecorededAt = millis();
- 
+
   TimedReading reading = {waterTemp, millis()};
-  waterTempGrapher.registerTemperature(reading);
+  waterTempGrapher.registerData(reading);
   //  nWaterTemp.setValue(waterTemp);
   //  nInfoWaterTemp.setValue(waterTemp);
   //When we upgrade waterTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
@@ -551,9 +634,9 @@ void updateWaterTemp() {
 void updateSolarTemp() {
   int val = analogRead(0);
   solarTemp = map(val, 0, 1023, 0, 50);
-  
+
   TimedReading reading = {solarTemp, millis()};
-  solarTempGrapher.registerTemperature(reading);
+  solarTempGrapher.registerData(reading);
   //  nInfoSolarTemp.setValue(solarTemp);
   //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
@@ -592,8 +675,8 @@ void updatePage4(void *ptr) {
   displayUpdateHeaterOn();
   displayUpdateState();
   //waveform stuff
-  waterTempGrapher.displayWaveform();
-  solarTempGrapher.displayWaveform();
+  //waterTempGrapher.displayWaveform();
+  //solarTempGrapher.displayWaveform();
 }
 
 
@@ -689,13 +772,13 @@ void updateTargetTempFromDisplay() {
 
 void numericSettingMinusCallback(void *ptr) {
   NumericSetting *numericSetting = (NumericSetting *) ptr;
-  numericSetting->setVal(numericSetting->getVal()-1);
+  numericSetting->setVal(numericSetting->getVal() - 1);
   //numericSetting->nexNumber->setValue(numericSetting->getVal());
 }
 
 void numericSettingPlusCallback(void *ptr) {
   NumericSetting *numericSetting = (NumericSetting *) ptr;
-  numericSetting->setVal(numericSetting->getVal()+1);
+  numericSetting->setVal(numericSetting->getVal() + 1);
   //numericSetting->nexNumber->setValue(numericSetting->getVal());
 }
 
