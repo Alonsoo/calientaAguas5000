@@ -3,19 +3,21 @@
 
 const int EEPROM_CHUNK_SIZE = 32;
 
+const int TIMER_BUTTON_PIN = 5;
+
 enum OperationMode {
   OFF,
   AUTO,
-  ON
+  TIMER
 };
 
 enum State {
   NONE,
-  DECIDE,
+  //DECIDE,
   STANDBY,
-  PROBE,
+  //PROBE,
   HEAT_AUTO,
-  HEAT_FORCE
+  TIMER_ON
 };
 
 
@@ -281,9 +283,9 @@ NexNumber nTargetTemp = NexNumber(0, 4, "nTargetTemp");
 NexNumber nWaterTemp = NexNumber(0, 6, "nWaterTemp");
 NexRadio rOff = NexRadio(0, 8, "rOff");
 NexRadio rAuto = NexRadio(0, 9, "rAuto");
-NexRadio rOn = NexRadio(0, 10, "rOn");
+NexRadio rTimer = NexRadio(0, 10, "rTimer");
 NexCheckbox cSolar = NexCheckbox(0, 17, "cSolar");
-NexCheckbox cHeater = NexCheckbox(0, 18, "cCaldera");
+NexCheckbox cHeater = NexCheckbox(0, 18, "cHeater");
 
 //Settings Page Components
 NexButton bTempTolMinus = NexButton(1, 3, "bTempTolM");
@@ -296,12 +298,15 @@ NexButton bProbeTimeMinus = NexButton(1, 14, "bProbeTimeM");
 NexButton bProbeTimePlus = NexButton(1, 16, "bProbeTimeP");
 NexButton bStandbyTimeMinus = NexButton(3, 3, "bStandbyTimeM");
 NexButton bStandbyTimePlus = NexButton(3, 5, "bStandbyTimeP");
+NexButton bTimerOnTimeMinus = NexButton(3, 8, "bTimerOnTimeM");
+NexButton bTimerOnTimePlus = NexButton(3, 10, "bTimerOnTimeP");
 
 NexNumber nTempTol = NexNumber(1, 4, "nTempTol");
 NexNumber nSolarTol = NexNumber(1, 7, "nSolarTol");
 NexNumber nSolarOffset = NexNumber(1, 11, "nSolarOffset");
 NexNumber nProbeTime = NexNumber(1, 15, "nProbeTime");
 NexNumber nStandbyTime = NexNumber(3, 4, "nStandbyTime");
+NexNumber nTimerOnTime = NexNumber(3, 9, "nTimerOnTime");
 
 // Info Page Components
 NexNumber nInfoWaterTemp = NexNumber(4, 23, "nInfoWaterTemp");
@@ -312,12 +317,12 @@ NexText tInfoSolarOn = NexText(4, 21, "tInfoSolarOn");
 NexText tInfoHeaterOn = NexText(4, 22, "tInfoHeaterOn");
 
 NexWaveform wInfoTemp = NexWaveform(4, 2, "wInfoTemp");
-NexText tInfoTimeLabels[] = {NexText(4, 7, "t1"),
-                             NexText(4, 8, "t2"),
-                             NexText(4, 9, "t3"),
-                             NexText(4, 10, "t4"),
-                             NexText(4, 11, "t5"),
-                             NexText(4, 12, "t6")
+NexText tInfoTimeLabels[] = { NexText(4, 7, "t1"),
+                              NexText(4, 8, "t2"),
+                              NexText(4, 9, "t3"),
+                              NexText(4, 10, "t4"),
+                              NexText(4, 11, "t5"),
+                              NexText(4, 12, "t6")
                             };
 
 
@@ -330,7 +335,7 @@ NexTouch *nex_listen_list[] = {
   &sTargetTemp,
   &rOff,
   &rAuto,
-  &rOn,
+  &rTimer,
   &cSolar,
   &cHeater,
   &bTempTolMinus,
@@ -343,6 +348,8 @@ NexTouch *nex_listen_list[] = {
   &bProbeTimePlus,
   &bStandbyTimeMinus,
   &bStandbyTimePlus,
+  &bTimerOnTimeMinus,
+  &bTimerOnTimePlus,
   NULL
 };
 
@@ -350,13 +357,14 @@ NexTouch *nex_listen_list[] = {
 OperationMode operationMode;
 State state = STANDBY;
 
-//int tempTolerance = 2; // For hysteresis
-//int solarTempTolerance = 2;// For hysteresis
-//int solarTempOffset = 2; // Solar wont turn on unless solar temperature is solarTempOffset degrees above water temp
-
 NumericSetting tempTolerance = NumericSetting(&nTempTol, 0); //{2, nTempTol, 0}; // For hysteresis
 NumericSetting solarTempTolerance = NumericSetting(&nSolarTol, 1); //{2, nSolarTol, 1}; // For hysteresis
 NumericSetting solarTempOffset = NumericSetting(&nSolarOffset, 2); //{2, nSolarOffset, 2}; // Solar wont turn on unless solar temperature is solarTempOffset degrees above water temp
+
+const int SOLAR_TEMP_LOWER_THRESHOLD = 27;
+//TODO: decide actual fault temperatures
+const int TEMP_SENSOR_LOW_FAULT = -1;
+const int TEMP_SENSOR_HIGH_FAULT = 49;
 
 int targetTemp;
 int waterTemp;
@@ -365,6 +373,8 @@ int solarTemp;
 int maxTemp;
 int minTemp;
 
+bool sensorFault = false;
+
 bool solarEnabled;
 bool heaterEnabled;
 
@@ -372,24 +382,25 @@ bool solarOn = false;
 bool pumpOn = false;
 bool heaterOn = false;
 
-long waterTempRecorededAt = -1; // initialize to -1 to ensure water temp readig is interpreted as stale on the first loop since there isnt a water temperature reading yet
-long waterTempReadingLifetime = 8 * 1000UL; //10 * 60 * 1000UL; // 10 minutes
-
-//long probeTime = 5 * 1000UL; //30 * 1000UL; //30 seconds
-//long standbyTime = 10 * 1000UL; //15 * 60 * 1000UL; //15 minutes
-
 NumericSetting probeTime = NumericSetting(&nProbeTime, 3); //{5, nProbeTime, 3}; // in seconds
-NumericSetting standbyTime = NumericSetting(&nStandbyTime, 4); //{10, nStandbyTime, 4};// in minutes
+//NumericSetting standbyTime = NumericSetting(&nStandbyTime, 4); //{10, nStandbyTime, 4};// in minutes
+NumericSetting timerOnTime = NumericSetting(&nTimerOnTime, 5); // in hours
 
-bool timerStarted = false;
-long timerStartedAt;
+long waterTempRecordedAt = -1; // initialize to -1 to ensure water temp readig is interpreted as stale on the first loop since there isnt a water temperature reading yet
+//long waterTempReadingLifetime = 8 * 1000UL; //10 * 60 * 1000UL; // 10 minutes
+NumericSetting waterTempReadingLifetime = NumericSetting(&nStandbyTime, 4);
+
+//bool timerStarted = false;
+//long timerStartedAt;
 
 NumericSetting *settings[] = {
   &tempTolerance,
   &solarTempTolerance,
   &solarTempOffset,
   &probeTime,
-  &standbyTime
+  &waterTempReadingLifetime,
+  &timerOnTime
+  //&standbyTime
 };
 
 
@@ -422,11 +433,11 @@ Waveform waveform = Waveform();
 void setup() {
   Serial.begin(9600);
 
+  pinMode(TIMER_BUTTON_PIN, INPUT);
 
   waveform.graphers[0] = &waterTempGrapher;
   waveform.graphers[1] = &solarTempGrapher;
   waveform.graphers[2] = &solarOnGrapher;
-
 
   nexInit();
 
@@ -440,9 +451,9 @@ void setup() {
   sTargetTemp.attachPush(sTempCallback);
   rOff.attachPush(rOffPushCallback);
   rAuto.attachPush(rAutoPushCallback);
-  rOn.attachPush(rOnPushCallback);
+  rTimer.attachPush(rTimerPushCallback);
   cSolar.attachPush(cSolarPushCallback);
-  cHeater.attachPush(cCalderaPushCallback);
+  cHeater.attachPush(cHeaterPushCallback);
 
   bTempTolMinus.attachPush(numericSettingMinusCallback, &tempTolerance);
   bTempTolPlus.attachPush(numericSettingPlusCallback, &tempTolerance);
@@ -452,8 +463,10 @@ void setup() {
   bSolarOffsetPlus.attachPush(numericSettingPlusCallback, &solarTempOffset);
   bProbeTimeMinus.attachPush(numericSettingMinusCallback, &probeTime);
   bProbeTimePlus.attachPush(numericSettingPlusCallback, &probeTime);
-  bStandbyTimeMinus.attachPush(numericSettingMinusCallback, &standbyTime);
-  bStandbyTimePlus.attachPush(numericSettingPlusCallback, &standbyTime);
+  bStandbyTimeMinus.attachPush(numericSettingMinusCallback, &waterTempReadingLifetime);
+  bStandbyTimePlus.attachPush(numericSettingPlusCallback, &waterTempReadingLifetime);
+  bTimerOnTimeMinus.attachPush(numericSettingMinusCallback, &timerOnTime);
+  bTimerOnTimePlus.attachPush(numericSettingPlusCallback, &timerOnTime);
 
   setMaxTemp(45);
   setMinTemp(25);
@@ -480,82 +493,27 @@ void loop() {
 
   nexLoop(nex_listen_list);
 
+  checkSensorFaults();
   updateSolarTemp();
+  timerButtonListen();
 
-  //  Serial.print("Solar: ");
-  //  Serial.print(solarTemp);
-  //  Serial.print(" Water: ");
-  //  Serial.print(waterTemp);
-  //
-  //  String stateString;
-  //  switch (state) {
-  //    case DECIDE: stateString = "Decide"; break;
-  //    case STANDBY: stateString = "Standby"; break;
-  //    case PROBE: stateString = "Probe"; break;
-  //    case HEAT_AUTO: stateString = "Heat A."; break;
-  //    case HEAT_FORCE: stateString = "Heat F."; break;
-  //    case NONE: stateString = "None"; break;
-  //  }
-  //
-  //  Serial.print(" State: ");
-  //  Serial.print(stateString);
+  heaterOn = heaterEnabled;
 
-  long timeEllapsed;
+  static unsigned long timerStartedAt = 0;
+  if (state != TIMER_ON) timerStartedAt = 0;
+
 
   switch (state) {
-    case DECIDE:
-      timerStarted = false;
-      long waterTempReadingAge;
-
-      waterTempReadingAge = millis() - waterTempRecorededAt;
-      if (waterTempReadingAge > waterTempReadingLifetime || waterTempRecorededAt == -1) //Check weather current water temperature value is stale
-        state = PROBE;
-      else if (waterTemp < targetTemp - tempTolerance.getVal())
-        state = HEAT_AUTO;
-      else
-        state = STANDBY;
-      break;
-
     case STANDBY:
-      //wait for a few minutes and probe again
-      if (!timerStarted) {
-        timerStarted = true;
-        timerStartedAt = millis();
-      }
-
-      pumpOn = false;
       solarOn = false;
+      pumpOn = heaterOn;
 
-      timeEllapsed = millis() - timerStartedAt;
-      //TODO UNCOMMENT ON PRODUCTION
-      //if (timeEllapsed > minToMillis(standbyTime.getVal())) {
-      if (timeEllapsed > secToMillis(standbyTime.getVal())) {
-        timerStarted = false;
-        state = PROBE;
-      }
-      break;
-
-    case PROBE:
-      //run water for a few seconds and meassure temperature
-      if (!timerStarted) {
-        timerStarted = true;
-        timerStartedAt = millis();
-      }
-
-      pumpOn = true;
-
-      timeEllapsed = millis() - timerStartedAt;
-      if (timeEllapsed > secToMillis(probeTime.getVal())) {
-        timerStarted = false;
-        updateWaterTemp();
-        state = DECIDE;
-      }
+      if (!waterTempReadingIsStale() && waterTemp < targetTemp - tempTolerance.getVal())
+        state = HEAT_AUTO;
       break;
 
     case HEAT_AUTO:
       //run water and choose how to heat it until target temp. is reached
-      updateWaterTemp();
-
       if (solarEnabled) {
         if (waterTemp < solarTemp - solarTempOffset.getVal() - solarTempTolerance.getVal())
           solarOn = true;
@@ -566,20 +524,28 @@ void loop() {
         solarOn = false;
       }
 
-      //Cosas de la caldera... idk
-
       pumpOn = solarOn || heaterOn;
 
-      if (waterTemp > targetTemp + tempTolerance.getVal()) {
+      if (!waterTempReadingIsStale() && waterTemp > targetTemp + tempTolerance.getVal())
         state = STANDBY;
-      }
       break;
 
-    case HEAT_FORCE:
-      //run water and choose how to heat it
-      updateWaterTemp();
-      pumpOn = true;
+    case TIMER_ON:
+      //turn pump on and choose how to heat it
       solarOn = solarEnabled;
+      pumpOn = true;
+
+
+      if (timerStartedAt == 0)
+        timerStartedAt = millis();
+
+      //Wait for timer to finish and set Op Mode to OFF
+      //TODO: replace timer conversion on production
+      //if(timer > hrToMillis(timerOnTime)){
+      if (millis() - timerStartedAt > secToMillis(timerOnTime.getVal())) {
+        setOperationMode(OFF);
+        timerStartedAt = 0; //reset timer
+      }
       break;
 
     default:
@@ -587,13 +553,37 @@ void loop() {
       //turn everything off
       solarOn = false;
       pumpOn = false;
-      timerStarted = false;
+      //timerStarted = false;
       break;
   }
 
 
+  //If conditions are right and water temperature reading is stale, then override pump to on so we can probe the water temperature later
+  //TODO: RTC add nightime conditioning
+  if (operationMode == AUTO && solarTemp > SOLAR_TEMP_LOWER_THRESHOLD && waterTempReadingIsStale())
+    pumpOn = true;
+
+
+  // If pump has been on long enough, update water temperature
+  static unsigned long pumpTurnedOnAt = 0;
+  static bool prevPumpOn = false;
+
+  if (pumpOn && !prevPumpOn)
+    pumpTurnedOnAt = millis();
+
+  unsigned long pumpOnFor = pumpOn ? millis() - pumpTurnedOnAt : 0;
+
+  //TODO: change time convertion for production
+  if (pumpOn && pumpOnFor > secToMillis(probeTime.getVal()))
+    updateWaterTemp();
+
+  prevPumpOn = pumpOn;
+
+
+  //Graph solarOn value
   TimedReading solarOnReading = {solarOn, millis()};
   solarOnGrapher.registerData(solarOnReading);
+
 
   //Listen for changes to trigger display updates and update change listeners
   for (ChangeListener_base *cl : changeListenList) {
@@ -605,41 +595,84 @@ void loop() {
 
 
   // Update waveform
-  static long waveformLastUpdatedAt = 0;
-  long ellapsedTime = millis() - waveformLastUpdatedAt;
-  if (ellapsedTime > 5000 || waveformLastUpdatedAt == 0) {
-    waveform.updateWaveform();
-    waveformLastUpdatedAt = millis();
-  }
+  //  static long waveformLastUpdatedAt = 0;
+  //  long ellapsedTime = millis() - waveformLastUpdatedAt;
+  //  if (ellapsedTime > 5000 || waveformLastUpdatedAt == 0) {
+  //    waveform.updateWaveform();
+  //    waveformLastUpdatedAt = millis();
+  //  }
 
   delay(50);
 }
 
 
-// Temperature Sensor Updates
+// Timer Button
+const int BUTTON_BOUNCE_COOLDOWN = 100; //ms
+
+void timerButtonListen() {
+  static int prevVal = LOW;
+  static unsigned long switchedOnAt = 0;
+
+  int val = digitalRead(TIMER_BUTTON_PIN);
+  if (val == HIGH && prevVal == LOW && (millis() - switchedOnAt) > BUTTON_BOUNCE_COOLDOWN) {
+    if (operationMode == OFF) setOperationMode(TIMER);
+    if (operationMode == TIMER) setOperationMode(OFF);
+    switchedOnAt = millis();
+    Serial.println("Button Pressed");
+  }
+  prevVal = val;
+}
+
+
+
+// Temperature Sensor Reading and Fault Checking
 
 void updateWaterTemp() {
-  int val = analogRead(1);
-  waterTemp = map(val, 0, 1023, 0, 50);
-  waterTempRecorededAt = millis();
+  waterTemp = readWaterTempSensor();
+  waterTempRecordedAt = millis();
 
   TimedReading reading = {waterTemp, millis()};
   waterTempGrapher.registerData(reading);
-  //  nWaterTemp.setValue(waterTemp);
-  //  nInfoWaterTemp.setValue(waterTemp);
   //When we upgrade waterTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
 
+float readWaterTempSensor() {
+  //TODO: temperature sensor calculation
+  int val = analogRead(1);
+  return map(val, 0, 1023, -2, 50);
+}
+
+bool waterTempReadingIsStale() {
+  unsigned long waterTempReadingAge = millis() - waterTempRecordedAt;
+  return waterTempReadingAge > secToMillis(waterTempReadingLifetime.getVal()) || waterTempRecordedAt == -1;
+}
 
 void updateSolarTemp() {
-  int val = analogRead(0);
-  solarTemp = map(val, 0, 1023, 0, 50);
+  solarTemp = readSolarTempSensor();
 
   TimedReading reading = {solarTemp, millis()};
   solarTempGrapher.registerData(reading);
-  //  nInfoSolarTemp.setValue(solarTemp);
   //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
+
+float readSolarTempSensor() {
+  //TODO: temperature sensor calculation
+  int val = analogRead(0);
+  return map(val, 0, 1023, -2, 50);
+}
+
+void checkSensorFaults() {
+  int wTemp = readWaterTempSensor();
+  int sTemp = readSolarTempSensor();
+
+  sensorFault = wTemp < TEMP_SENSOR_LOW_FAULT || wTemp > TEMP_SENSOR_HIGH_FAULT || sTemp < TEMP_SENSOR_LOW_FAULT || sTemp > TEMP_SENSOR_HIGH_FAULT;
+
+  static bool prevSensorFault = false;
+  if (sensorFault != prevSensorFault) //Only update display when value changes, otherwise nextion lags
+    displayUpdateSensorFault();
+  prevSensorFault = sensorFault;
+}
+
 
 
 // Display page updates
@@ -650,9 +683,10 @@ void updatePage0(void *ptr) {
   sTargetTemp.setValue(targetTemp);
   rOff.setValue(operationMode == OFF);
   rAuto.setValue(operationMode == AUTO);
-  rOn.setValue(operationMode == ON);
+  rTimer.setValue(operationMode == TIMER);
   cSolar.setValue(solarEnabled);
   cHeater.setValue(heaterEnabled);
+  displayUpdateSensorFault();
 }
 
 void updatePage1(void *ptr) {
@@ -663,7 +697,8 @@ void updatePage1(void *ptr) {
 }
 
 void updatePage3(void *ptr) {
-  nStandbyTime.setValue(standbyTime.getVal());
+  nStandbyTime.setValue(waterTempReadingLifetime.getVal());
+  nTimerOnTime.setValue(timerOnTime.getVal());
 }
 
 void updatePage4(void *ptr) {
@@ -686,18 +721,26 @@ void displayUpdateWaterTemp() {
 }
 
 void displayUpdateSolarTemp() {
+  Serial.println(solarTemp);
   nInfoSolarTemp.setValue(solarTemp);
+}
+
+void displayUpdateSensorFault() {
+  if (sensorFault)
+    Serial2.write("vis tCheckSensors,1\xFF\xFF\xFF");
+  else
+    Serial2.write("vis tCheckSensors,0\xFF\xFF\xFF");
 }
 
 void displayUpdateState() {
   String stateString;
   switch (state) {
-    case DECIDE: stateString = "Decide"; break;
+    //case DECIDE: stateString = "Decide"; break;
     case STANDBY: stateString = "Standby"; break;
-    case PROBE: stateString = "Probe"; break;
+    //case PROBE: stateString = "Probe"; break;
     case HEAT_AUTO: stateString = "Heat A."; break;
-    case HEAT_FORCE: stateString = "Heat F."; break;
-    case NONE: stateString = "None"; break;
+    case TIMER_ON: stateString = "Timer On"; break;
+    case NONE: stateString = "OFF"; break;
   }
   tInfoState.setText(stateString.c_str());
 }
@@ -731,8 +774,8 @@ void rAutoPushCallback(void *ptr) {
   setOperationMode(AUTO);
 }
 
-void rOnPushCallback(void *ptr) {
-  setOperationMode(ON);
+void rTimerPushCallback(void *ptr) {
+  setOperationMode(TIMER);
 }
 
 
@@ -744,7 +787,7 @@ void cSolarPushCallback(void *ptr) {
   setSolarEnabled(enabled);
 }
 
-void cCalderaPushCallback(void *ptr) {
+void cHeaterPushCallback(void *ptr) {
   uint32_t enabled;
   cHeater.getValue(&enabled);
   setHeaterEnabled(enabled);
@@ -792,10 +835,6 @@ void setTargetTemp(int temp, bool updateSlider) {
   if (updateSlider) {
     sTargetTemp.setValue(targetTemp);
   }
-
-  if (operationMode == AUTO && state == STANDBY) {
-    state = DECIDE;
-  }
 }
 
 /*Set maximum allowed target temperature and update slider boundaries*/
@@ -820,17 +859,17 @@ void setOperationMode(OperationMode mode) {
 
     case AUTO:
       if (operationMode != mode)
-        state = DECIDE;
+        state = STANDBY;
       break;
 
-    case ON:
-      state = HEAT_FORCE;
+    case TIMER:
+      state = TIMER_ON;
       break;
   }
   operationMode = mode;
   rOff.setValue(mode == OFF ? 1 : 0);
   rAuto.setValue(mode == AUTO ? 1 : 0);
-  rOn.setValue(mode == ON ? 1 : 0);
+  rTimer.setValue(mode == TIMER ? 1 : 0);
 }
 
 void setSolarEnabled(bool enabled) {
@@ -846,20 +885,22 @@ void setHeaterEnabled(bool enabled) {
 
 // Time Conversions
 
-long secToMillis(int seconds) {
+unsigned long secToMillis(int seconds) {
   return seconds * 1000UL;
 }
 
-long minToMillis(int minutes) {
+unsigned long minToMillis(int minutes) {
   return minutes * 60 * 1000UL;
 }
 
+unsigned long hrToMillis(int hrs) {
+  return hrs * 60 * 60 * 1000UL;
+}
 
-// EEPROM Storage
+unsigned long minToSec(int minutes) {
+  return minutes * 60UL;
+}
 
-//void fetchSettings(){
-//  for(NumericSetting *setting: settings){
-//    //EEPROM.get(setting->eeAddress, setting->value);
-//    setting->
-//  }
-//}
+unsigned long hrToSec(int hrs) {
+  return hrs * 60 * 60UL;
+}
