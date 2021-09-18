@@ -367,7 +367,7 @@ NumericSetting tempTolerance = NumericSetting(&nTempTol, 0); //{2, nTempTol, 0};
 NumericSetting solarTempTolerance = NumericSetting(&nSolarTol, 1); //{2, nSolarTol, 1}; // For hysteresis
 NumericSetting solarTempOffset = NumericSetting(&nSolarOffset, 2); //{2, nSolarOffset, 2}; // Solar wont turn on unless solar temperature is solarTempOffset degrees above water temp
 
-const int SOLAR_TEMP_LOWER_THRESHOLD = 27;
+const int SOLAR_TEMP_LOWER_THRESHOLD = 25;
 //TODO: decide actual fault temperatures
 const int TEMP_SENSOR_LOW_FAULT = -1;
 const int TEMP_SENSOR_HIGH_FAULT = 49;
