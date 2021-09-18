@@ -1,9 +1,15 @@
+#include <TimeLib.h>
+#include <Wire.h>
+#include <DS1307RTC.h>
 #include <EEPROM.h>
 #include "Nextion.h"
+
 
 const int EEPROM_CHUNK_SIZE = 32;
 
 const int TIMER_BUTTON_PIN = 5;
+const int WATER_TEMP_SENSOR_PIN = 1;
+const int SOLAR_TEMP_SENSOR_PIN = 0;
 
 enum OperationMode {
   OFF,
@@ -433,6 +439,12 @@ Waveform waveform = Waveform();
 void setup() {
   Serial.begin(9600);
 
+  setSyncProvider(RTC.get);   // the function to get the time from the RTC
+  if(timeStatus()!= timeSet) 
+     Serial.println("Unable to sync with the RTC");
+  else
+     Serial.println("RTC has set the system time"); 
+
   pinMode(TIMER_BUTTON_PIN, INPUT);
 
   waveform.graphers[0] = &waterTempGrapher;
@@ -505,11 +517,12 @@ void loop() {
 
   switch (state) {
     case STANDBY:
-      solarOn = false;
-      pumpOn = heaterOn;
-
       if (!waterTempReadingIsStale() && waterTemp < targetTemp - tempTolerance.getVal())
         state = HEAT_AUTO;
+      else {
+        solarOn = false;
+        pumpOn = heaterOn;
+      }
       break;
 
     case HEAT_AUTO:
@@ -535,14 +548,13 @@ void loop() {
       solarOn = solarEnabled;
       pumpOn = true;
 
-
       if (timerStartedAt == 0)
-        timerStartedAt = millis();
+        timerStartedAt = now();
 
       //Wait for timer to finish and set Op Mode to OFF
       //TODO: replace timer conversion on production
-      //if(timer > hrToMillis(timerOnTime)){
-      if (millis() - timerStartedAt > secToMillis(timerOnTime.getVal())) {
+      //if(now() - timerStartedAt > hrToSec(timerOnTime.getVal())){
+      if (now() - timerStartedAt > timerOnTime.getVal()) {
         setOperationMode(OFF);
         timerStartedAt = 0; //reset timer
       }
@@ -560,7 +572,8 @@ void loop() {
 
   //If conditions are right and water temperature reading is stale, then override pump to on so we can probe the water temperature later
   //TODO: RTC add nightime conditioning
-  if (operationMode == AUTO && solarTemp > SOLAR_TEMP_LOWER_THRESHOLD && waterTempReadingIsStale())
+  bool isNightime = hour() >= 20 || hour() < 7;
+  if (operationMode == AUTO && solarTemp > SOLAR_TEMP_LOWER_THRESHOLD && waterTempReadingIsStale() && !isNightime)
     pumpOn = true;
 
 
@@ -569,12 +582,12 @@ void loop() {
   static bool prevPumpOn = false;
 
   if (pumpOn && !prevPumpOn)
-    pumpTurnedOnAt = millis();
+    pumpTurnedOnAt = now();
 
-  unsigned long pumpOnFor = pumpOn ? millis() - pumpTurnedOnAt : 0;
+  unsigned long pumpOnFor = pumpOn ? now() - pumpTurnedOnAt : 0;
 
   //TODO: change time convertion for production
-  if (pumpOn && pumpOnFor > secToMillis(probeTime.getVal()))
+  if (pumpOn && pumpOnFor > probeTime.getVal())
     updateWaterTemp();
 
   prevPumpOn = pumpOn;
@@ -628,42 +641,36 @@ void timerButtonListen() {
 // Temperature Sensor Reading and Fault Checking
 
 void updateWaterTemp() {
-  waterTemp = readWaterTempSensor();
-  waterTempRecordedAt = millis();
+  waterTemp = readTempSensor(WATER_TEMP_SENSOR_PIN);
+  waterTempRecordedAt = now();
 
   TimedReading reading = {waterTemp, millis()};
   waterTempGrapher.registerData(reading);
   //When we upgrade waterTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
 
-float readWaterTempSensor() {
-  //TODO: temperature sensor calculation
-  int val = analogRead(1);
-  return map(val, 0, 1023, -2, 50);
-}
-
 bool waterTempReadingIsStale() {
-  unsigned long waterTempReadingAge = millis() - waterTempRecordedAt;
-  return waterTempReadingAge > secToMillis(waterTempReadingLifetime.getVal()) || waterTempRecordedAt == -1;
+  unsigned long waterTempReadingAge = now() - waterTempRecordedAt;
+  return waterTempReadingAge > waterTempReadingLifetime.getVal() || waterTempRecordedAt == -1;
 }
 
 void updateSolarTemp() {
-  solarTemp = readSolarTempSensor();
+  solarTemp = readTempSensor(SOLAR_TEMP_SENSOR_PIN);
 
   TimedReading reading = {solarTemp, millis()};
   solarTempGrapher.registerData(reading);
   //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
 
-float readSolarTempSensor() {
+float readTempSensor(int pin) {
   //TODO: temperature sensor calculation
-  int val = analogRead(0);
+  int val = analogRead(pin);
   return map(val, 0, 1023, -2, 50);
 }
 
 void checkSensorFaults() {
-  int wTemp = readWaterTempSensor();
-  int sTemp = readSolarTempSensor();
+  int wTemp = readTempSensor(1);
+  int sTemp = readTempSensor(0);
 
   sensorFault = wTemp < TEMP_SENSOR_LOW_FAULT || wTemp > TEMP_SENSOR_HIGH_FAULT || sTemp < TEMP_SENSOR_LOW_FAULT || sTemp > TEMP_SENSOR_HIGH_FAULT;
 
@@ -721,7 +728,6 @@ void displayUpdateWaterTemp() {
 }
 
 void displayUpdateSolarTemp() {
-  Serial.println(solarTemp);
   nInfoSolarTemp.setValue(solarTemp);
 }
 
