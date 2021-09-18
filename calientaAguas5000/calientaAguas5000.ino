@@ -324,6 +324,8 @@ NexNumber nProbeTime = NexNumber(1, 15, "nProbeTime");
 NexNumber nStandbyTime = NexNumber(3, 4, "nStandbyTime");
 NexNumber nTimerOnTime = NexNumber(3, 9, "nTimerOnTime");
 
+NexText tTime = NexText(3, 12, "tTime");
+
 // Info Page Components
 NexNumber nInfoWaterTemp = NexNumber(4, 23, "nInfoWaterTemp");
 NexNumber nInfoSolarTemp = NexNumber(4, 26, "nInfoSolarTemp");
@@ -514,6 +516,8 @@ void loop() {
   checkSensorFaults();
   updateSolarTemp();
   timerButtonListen();
+
+  displayUpdateClock(false);
 
   heaterOn = heaterEnabled;
 
@@ -718,6 +722,7 @@ void updatePage3(void *ptr) {
   currentPage = 3;
   nStandbyTime.setValue(waterTempReadingLifetime.getVal());
   nTimerOnTime.setValue(timerOnTime.getVal());
+  displayUpdateClock(true);
 }
 
 void updatePage4(void *ptr) {
@@ -730,13 +735,13 @@ void updatePage4(void *ptr) {
   displayUpdateHeaterOn();
   displayUpdateState();
 
-    //Clear waveform
-  Serial2.write("cle 2,0\xFF\xFF\xFF");
-  delay(50);
-  Serial2.write("cle 2,1\xFF\xFF\xFF");
-  delay(50);
-  Serial2.write("cle 2,2\xFF\xFF\xFF");
-  waveform.updateWaveform();
+  //Clear waveform
+//  Serial2.write("cle 2,0\xFF\xFF\xFF");
+//  delay(50);
+//  Serial2.write("cle 2,1\xFF\xFF\xFF");
+//  delay(50);
+//  Serial2.write("cle 2,2\xFF\xFF\xFF");
+//  waveform.updateWaveform();
   //waveform stuff
   //waterTempGrapher.displayWaveform();
   //solarTempGrapher.displayWaveform();
@@ -790,10 +795,19 @@ void displayUpdateHeaterOn() {
   tInfoHeaterOn.Set_font_color_pco(heaterOn ? greenPco : redPco);
 }
 
+void displayUpdateClock(bool force){
+  static int prevMinutes = 0;
+  if(force || minute() != prevMinutes){
+    char text[6];
+    sprintf(text, "%2d:%02d", hour(), minute());
+    tTime.setText(text);
+  }
+  prevMinutes = minute();
+}
 
 // Radio button callbacks
 
-void rOffPushCallback(void *ptr) {
+void rOffPushCallback(void *ptr){
   setOperationMode(OFF);
 }
 
