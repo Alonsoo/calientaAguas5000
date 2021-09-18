@@ -89,7 +89,7 @@ float fmap(float x, float in_min, float in_max, float out_min, float out_max) {
 
 struct TimedReading {
   int val;
-  unsigned long takenAt;
+  long takenAt;
 };
 
 
@@ -97,7 +97,7 @@ struct Grapher {
   static const int MIN_READING_INTERVAL = 5; //minutes
 
   // We will take water temperature readings at most every 5 minutes and want to store 12hrs of data so we will need at most (60 / 5) * 12 = 144 readings
-  static const int MAX_READINGS = 200;//(60 / MIN_READING_INTERVAL) * 12;
+  static const int MAX_READINGS = 60;//(60 / MIN_READING_INTERVAL) * 12;
 
   int readingsTaken = 0;
   TimedReading readings[MAX_READINGS];
@@ -110,10 +110,10 @@ struct Grapher {
 
   void registerData(TimedReading reading) {
     long lastReadingTakenAt = readingsTaken > 0 ? readings[readingsTaken - 1].takenAt : 0;
-    long ellapsedTime = millis() - lastReadingTakenAt;
+    long ellapsedTime = now() - lastReadingTakenAt;
 
-    if (ellapsedTime > 400 || readingsTaken == 0) {
-      //if (ellapsedTime > minToMillis(MIN_READING_INTERVAL) || readingsTaken == 0) {
+    if (ellapsedTime >= 1 || readingsTaken == 0) {
+      //if (ellapsedTime > minToSec(MIN_READING_INTERVAL) || readingsTaken == 0) {
       if (readingsTaken < MAX_READINGS) {
         //Store new reading on next available space on array
         readings[readingsTaken] = reading;
@@ -129,7 +129,7 @@ struct Grapher {
     }
   }
 
-  void displayWaveform(unsigned long graphStartTime, unsigned long waveformTimeWidth, int waveformWidth) {
+  void displayWaveform(long graphStartTime, long waveformTimeWidth, int waveformWidth) {
     if (readingsTaken == 0) return;
 
     long numDataPoints = ((readings[readingsTaken - 1].takenAt - graphStartTime) / (float) waveformTimeWidth) * waveformWidth;
@@ -142,20 +142,27 @@ struct Grapher {
     //Interpolate over current teperature readings to produce regular-intervaled data points
     int dataPoints[numDataPoints];
     for (int i = 0; i < numDataPoints; i++) {
-      unsigned long pointTime = graphStartTime + ((i / (float)waveformWidth) * waveformTimeWidth);
+      float relativePointTime = ((i / (float)waveformWidth) * waveformTimeWidth);
 
+//      Serial.print("relative poin: ");
+//      Serial.print((i / (float)waveformWidth) * waveformTimeWidth);
+//      Serial.print(" relative point time: ");
+//      Serial.print(relativePointTime);
+//      Serial.print(" realtive first reading at: ");
+//      Serial.println(readings[0].takenAt - graphStartTime);
       bool debug_found = false;
-      if (readings[0].takenAt >= pointTime) {
+      if (readings[0].takenAt - graphStartTime >= relativePointTime) {
         //data point is from before any measurments were made, send 1
         dataPoints[i] = 1;
         debug_found = true;
+        //Serial.println("before");
       }
       else {
         //data points lies between measuements, serach for closest ones and interpolate
         for (int j = 0; j < readingsTaken - 1; j++) {
-          if (readings[j + 1].takenAt >= pointTime) {
+          if (readings[j + 1].takenAt - graphStartTime >= relativePointTime) {
             //Interpolate dataPoint value at pointTime using closest temp readings
-            float val = interpolateData(pointTime, readings[j], readings[j + 1]);
+            float val = interpolateData(graphStartTime, relativePointTime, readings[j], readings[j + 1]);
 
             //Scale and clip value
             val = scaleData(val);
@@ -191,12 +198,12 @@ struct Grapher {
     Serial2.write(clearString);
     delay(50);
     Serial2.write(instructionString);
-    delay(5);
+    delay(20);
     Serial2.write(dataString);
-    delay(500);
+    delay(750);
   }
 
-  virtual float interpolateData(unsigned long t, TimedReading before, TimedReading after) = 0;
+  virtual float interpolateData(long graphStartTime, float t, TimedReading before, TimedReading after) = 0;
   virtual int scaleData(float val) = 0;
 };
 
@@ -207,8 +214,10 @@ struct TempGrapher : Grapher {
 
   TempGrapher(int chnl) : Grapher(chnl) {}
 
-  float interpolateData(unsigned long t, TimedReading before, TimedReading after) {
-    float interp = (t - before.takenAt) / (float) (after.takenAt - before.takenAt);
+  float interpolateData(long graphStartTime, float t, TimedReading before, TimedReading after) {
+    float interp = (t - (before.takenAt -graphStartTime)) / (float) (after.takenAt - before.takenAt);
+//    Serial.print("interp");
+//    Serial.println(interp);
     return ((after.val - before.val) * interp) + before.val;
   }
 
@@ -223,8 +232,8 @@ struct PowerGrapher : Grapher {
 
   PowerGrapher(int chnl) : Grapher(chnl) {}
 
-  float interpolateData(unsigned long t, TimedReading before, TimedReading after) {
-    return t - before.takenAt < after.takenAt - t ? before.val : after.val;
+  float interpolateData(long graphStartTime, float t, TimedReading before, TimedReading after) {
+    return t - (before.takenAt - graphStartTime) < (after.takenAt - graphStartTime) - t ? before.val : after.val;
   }
 
   int scaleData(float val) {
@@ -234,8 +243,8 @@ struct PowerGrapher : Grapher {
 
 
 struct Waveform {
-  static const unsigned long WAVEFORM_TIME_INTERVAL = 10 * 1000UL; // 10 seconds
-  static const unsigned long WAVEFORM_TIME_WIDTH = 60 * 1000UL; //60 seconds
+  static const long WAVEFORM_TIME_INTERVAL = 10; // 10 seconds
+  static const long WAVEFORM_TIME_WIDTH = 60; //60 seconds
   static const int WAVEFORM_WIDTH = 288; //px
 
   static const int NUM_GRAPHERS = 3;
@@ -255,19 +264,19 @@ struct Waveform {
       }
     }
 
-    if (earliestReading == 0) return; // stop if there arent any readings yet
+    if (earliestReading == 2147483647L) return; // stop if there arent any readings yet
 
-    unsigned long graphStartTime = 12;
-    unsigned long earliestReadingRoundedDown = floor(earliestReading / (float)WAVEFORM_TIME_INTERVAL) * WAVEFORM_TIME_INTERVAL; //round down to the nearest graph time interval
+    long graphStartTime;
+    long earliestReadingRoundedDown = earliestReading - (earliestReading % WAVEFORM_TIME_INTERVAL); //round down to the nearest graph time interval
 
     if (latestReading - earliestReadingRoundedDown > WAVEFORM_TIME_WIDTH) {
-      unsigned long graphEndTime = ceil(latestReading / (float)WAVEFORM_TIME_INTERVAL) * WAVEFORM_TIME_INTERVAL; //round up to the nearest graph time interval
+      long graphEndTime = latestReading - (latestReading % WAVEFORM_TIME_INTERVAL) + WAVEFORM_TIME_INTERVAL; //round up to the nearest graph time interval
       graphStartTime = graphEndTime - WAVEFORM_TIME_WIDTH;
     }
     else {
       graphStartTime = earliestReadingRoundedDown;
     }
-
+    
     // Display individual graphs
     for (Grapher *grapher : graphers) {
       grapher->displayWaveform(graphStartTime, WAVEFORM_TIME_WIDTH, WAVEFORM_WIDTH);
@@ -278,6 +287,7 @@ struct Waveform {
 
 
 // Nextion pages
+int currentPage;
 NexPage page0 = NexPage(0, 0, NULL);
 NexPage page1 = NexPage(1, 0, NULL);
 NexPage page3 = NexPage(3, 0, NULL);
@@ -492,17 +502,13 @@ void setup() {
   updatePage3(NULL);
   updatePage4(NULL);
 
-  //Clear waveform
-  Serial2.write("cle 2,0\xFF\xFF\xFF");
+  currentPage = 0;
+  Serial2.write("page 0\xFF\xFF\xFF");
   delay(50);
-  Serial2.write("cle 2,1\xFF\xFF\xFF");
-  delay(50);
-  Serial2.write("cle 2,2\xFF\xFF\xFF");
 }
 
 
 void loop() {
-
   nexLoop(nex_listen_list);
 
   checkSensorFaults();
@@ -511,7 +517,7 @@ void loop() {
 
   heaterOn = heaterEnabled;
 
-  static unsigned long timerStartedAt = 0;
+  static long timerStartedAt = 0;
   if (state != TIMER_ON) timerStartedAt = 0;
 
 
@@ -578,13 +584,13 @@ void loop() {
 
 
   // If pump has been on long enough, update water temperature
-  static unsigned long pumpTurnedOnAt = 0;
+  static long pumpTurnedOnAt = 0;
   static bool prevPumpOn = false;
 
   if (pumpOn && !prevPumpOn)
     pumpTurnedOnAt = now();
 
-  unsigned long pumpOnFor = pumpOn ? now() - pumpTurnedOnAt : 0;
+  long pumpOnFor = pumpOn ? now() - pumpTurnedOnAt : 0;
 
   //TODO: change time convertion for production
   if (pumpOn && pumpOnFor > probeTime.getVal())
@@ -594,7 +600,7 @@ void loop() {
 
 
   //Graph solarOn value
-  TimedReading solarOnReading = {solarOn, millis()};
+  TimedReading solarOnReading = {solarOn, now()};
   solarOnGrapher.registerData(solarOnReading);
 
 
@@ -608,12 +614,15 @@ void loop() {
 
 
   // Update waveform
-  //  static long waveformLastUpdatedAt = 0;
-  //  long ellapsedTime = millis() - waveformLastUpdatedAt;
-  //  if (ellapsedTime > 5000 || waveformLastUpdatedAt == 0) {
-  //    waveform.updateWaveform();
-  //    waveformLastUpdatedAt = millis();
-  //  }
+//    static long waveformLastUpdatedAt = 0;
+//    long ellapsedTime = now() - waveformLastUpdatedAt;
+//    if ((ellapsedTime >= 5 || waveformLastUpdatedAt == 0) && currentPage == 4) {
+//      Serial.println("update");
+//      waveform.updateWaveform();
+//      waveformLastUpdatedAt = now();
+//      
+//      Serial.println("done");
+//    }
 
   delay(50);
 }
@@ -624,7 +633,7 @@ const int BUTTON_BOUNCE_COOLDOWN = 100; //ms
 
 void timerButtonListen() {
   static int prevVal = LOW;
-  static unsigned long switchedOnAt = 0;
+  static long switchedOnAt = 0;
 
   int val = digitalRead(TIMER_BUTTON_PIN);
   if (val == HIGH && prevVal == LOW && (millis() - switchedOnAt) > BUTTON_BOUNCE_COOLDOWN) {
@@ -644,20 +653,20 @@ void updateWaterTemp() {
   waterTemp = readTempSensor(WATER_TEMP_SENSOR_PIN);
   waterTempRecordedAt = now();
 
-  TimedReading reading = {waterTemp, millis()};
+  TimedReading reading = {waterTemp, now()};
   waterTempGrapher.registerData(reading);
   //When we upgrade waterTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
 
 bool waterTempReadingIsStale() {
-  unsigned long waterTempReadingAge = now() - waterTempRecordedAt;
+  long waterTempReadingAge = now() - waterTempRecordedAt;
   return waterTempReadingAge > waterTempReadingLifetime.getVal() || waterTempRecordedAt == -1;
 }
 
 void updateSolarTemp() {
   solarTemp = readTempSensor(SOLAR_TEMP_SENSOR_PIN);
 
-  TimedReading reading = {solarTemp, millis()};
+  TimedReading reading = {solarTemp, now()};
   solarTempGrapher.registerData(reading);
   //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
@@ -685,6 +694,7 @@ void checkSensorFaults() {
 // Display page updates
 
 void updatePage0(void *ptr) {
+  currentPage = 0;
   nWaterTemp.setValue(waterTemp);
   nTargetTemp.setValue(targetTemp);
   sTargetTemp.setValue(targetTemp);
@@ -697,6 +707,7 @@ void updatePage0(void *ptr) {
 }
 
 void updatePage1(void *ptr) {
+  currentPage = 1;
   nTempTol.setValue(tempTolerance.getVal());
   nSolarTol.setValue(solarTempTolerance.getVal());
   nSolarOffset.setValue(solarTempOffset.getVal());
@@ -704,11 +715,13 @@ void updatePage1(void *ptr) {
 }
 
 void updatePage3(void *ptr) {
+  currentPage = 3;
   nStandbyTime.setValue(waterTempReadingLifetime.getVal());
   nTimerOnTime.setValue(timerOnTime.getVal());
 }
 
 void updatePage4(void *ptr) {
+  currentPage = 4;
   nInfoWaterTemp.setValue(waterTemp);
   nInfoSolarTemp.setValue(solarTemp);
 
@@ -716,6 +729,14 @@ void updatePage4(void *ptr) {
   displayUpdateSolarOn();
   displayUpdateHeaterOn();
   displayUpdateState();
+
+    //Clear waveform
+  Serial2.write("cle 2,0\xFF\xFF\xFF");
+  delay(50);
+  Serial2.write("cle 2,1\xFF\xFF\xFF");
+  delay(50);
+  Serial2.write("cle 2,2\xFF\xFF\xFF");
+  waveform.updateWaveform();
   //waveform stuff
   //waterTempGrapher.displayWaveform();
   //solarTempGrapher.displayWaveform();
@@ -891,22 +912,22 @@ void setHeaterEnabled(bool enabled) {
 
 // Time Conversions
 
-unsigned long secToMillis(int seconds) {
+long secToMillis(int seconds) {
   return seconds * 1000UL;
 }
 
-unsigned long minToMillis(int minutes) {
+long minToMillis(int minutes) {
   return minutes * 60 * 1000UL;
 }
 
-unsigned long hrToMillis(int hrs) {
+long hrToMillis(int hrs) {
   return hrs * 60 * 60 * 1000UL;
 }
 
-unsigned long minToSec(int minutes) {
+long minToSec(int minutes) {
   return minutes * 60UL;
 }
 
-unsigned long hrToSec(int hrs) {
+long hrToSec(int hrs) {
   return hrs * 60 * 60UL;
 }
