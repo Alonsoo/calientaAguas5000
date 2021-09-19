@@ -7,9 +7,11 @@
 
 const int EEPROM_CHUNK_SIZE = 32;
 
-const int TIMER_BUTTON_PIN = 5;
+const int TIMER_BUTTON_PIN = 4;
 const int WATER_TEMP_SENSOR_PIN = 1;
 const int SOLAR_TEMP_SENSOR_PIN = 0;
+const int SOLAR_VALVE_PIN = 2;
+const int PUMP_PIN = 3;
 
 enum OperationMode {
   OFF,
@@ -457,7 +459,10 @@ void setup() {
   else
      Serial.println("RTC has set the system time"); 
 
-  pinMode(TIMER_BUTTON_PIN, INPUT);
+  pinMode(TIMER_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(SOLAR_VALVE_PIN, OUTPUT);
+  pinMode(PUMP_PIN, OUTPUT);
+  pinMode(13, INPUT);
 
   waveform.graphers[0] = &waterTempGrapher;
   waveform.graphers[1] = &solarTempGrapher;
@@ -602,6 +607,10 @@ void loop() {
 
   prevPumpOn = pumpOn;
 
+  //Control hardware
+  digitalWrite(SOLAR_VALVE_PIN, solarOn);
+  digitalWrite(PUMP_PIN, pumpOn);
+
 
   //Graph solarOn value
   TimedReading solarOnReading = {solarOn, now()};
@@ -676,9 +685,11 @@ void updateSolarTemp() {
 }
 
 float readTempSensor(int pin) {
-  //TODO: temperature sensor calculation
   int val = analogRead(pin);
-  return map(val, 0, 1023, -2, 50);
+  float volt = fmap(val, 0, 1023, 0, 5);
+  float res =  (5 * 10000L) / volt - 10000L;
+  float temp = 238 - 23.1*log(res);
+  return temp;
 }
 
 void checkSensorFaults() {
