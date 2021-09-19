@@ -146,12 +146,12 @@ struct Grapher {
     for (int i = 0; i < numDataPoints; i++) {
       float relativePointTime = ((i / (float)waveformWidth) * waveformTimeWidth);
 
-//      Serial.print("relative poin: ");
-//      Serial.print((i / (float)waveformWidth) * waveformTimeWidth);
-//      Serial.print(" relative point time: ");
-//      Serial.print(relativePointTime);
-//      Serial.print(" realtive first reading at: ");
-//      Serial.println(readings[0].takenAt - graphStartTime);
+      //      Serial.print("relative poin: ");
+      //      Serial.print((i / (float)waveformWidth) * waveformTimeWidth);
+      //      Serial.print(" relative point time: ");
+      //      Serial.print(relativePointTime);
+      //      Serial.print(" realtive first reading at: ");
+      //      Serial.println(readings[0].takenAt - graphStartTime);
       bool debug_found = false;
       if (readings[0].takenAt - graphStartTime >= relativePointTime) {
         //data point is from before any measurments were made, send 1
@@ -217,9 +217,9 @@ struct TempGrapher : Grapher {
   TempGrapher(int chnl) : Grapher(chnl) {}
 
   float interpolateData(long graphStartTime, float t, TimedReading before, TimedReading after) {
-    float interp = (t - (before.takenAt -graphStartTime)) / (float) (after.takenAt - before.takenAt);
-//    Serial.print("interp");
-//    Serial.println(interp);
+    float interp = (t - (before.takenAt - graphStartTime)) / (float) (after.takenAt - before.takenAt);
+    //    Serial.print("interp");
+    //    Serial.println(interp);
     return ((after.val - before.val) * interp) + before.val;
   }
 
@@ -278,7 +278,7 @@ struct Waveform {
     else {
       graphStartTime = earliestReadingRoundedDown;
     }
-    
+
     // Display individual graphs
     for (Grapher *grapher : graphers) {
       grapher->displayWaveform(graphStartTime, WAVEFORM_TIME_WIDTH, WAVEFORM_WIDTH);
@@ -454,10 +454,10 @@ void setup() {
   Serial.begin(9600);
 
   setSyncProvider(RTC.get);   // the function to get the time from the RTC
-  if(timeStatus()!= timeSet) 
-     Serial.println("Unable to sync with the RTC");
+  if (timeStatus() != timeSet)
+    Serial.println("Unable to sync with the RTC");
   else
-     Serial.println("RTC has set the system time"); 
+    Serial.println("RTC has set the system time");
 
   pinMode(TIMER_BUTTON_PIN, INPUT_PULLUP);
   pinMode(SOLAR_VALVE_PIN, OUTPUT);
@@ -627,15 +627,15 @@ void loop() {
 
 
   // Update waveform
-//    static long waveformLastUpdatedAt = 0;
-//    long ellapsedTime = now() - waveformLastUpdatedAt;
-//    if ((ellapsedTime >= 5 || waveformLastUpdatedAt == 0) && currentPage == 4) {
-//      Serial.println("update");
-//      waveform.updateWaveform();
-//      waveformLastUpdatedAt = now();
-//      
-//      Serial.println("done");
-//    }
+  //    static long waveformLastUpdatedAt = 0;
+  //    long ellapsedTime = now() - waveformLastUpdatedAt;
+  //    if ((ellapsedTime >= 5 || waveformLastUpdatedAt == 0) && currentPage == 4) {
+  //      Serial.println("update");
+  //      waveform.updateWaveform();
+  //      waveformLastUpdatedAt = now();
+  //
+  //      Serial.println("done");
+  //    }
 
   delay(50);
 }
@@ -687,8 +687,8 @@ void updateSolarTemp() {
 float readTempSensor(int pin) {
   int val = analogRead(pin);
   float volt = fmap(val, 0, 1023, 0, 5);
-  float res =  (5 * 10000L) / volt - 10000L;
-  float temp = 238 - 23.1*log(res);
+  float res =  (5 * 10000L) / volt - 10000L ;
+  float temp = 238 - 23.1 * log(res);
   return temp;
 }
 
@@ -697,6 +697,9 @@ void checkSensorFaults() {
   int sTemp = readTempSensor(0);
 
   sensorFault = wTemp < TEMP_SENSOR_LOW_FAULT || wTemp > TEMP_SENSOR_HIGH_FAULT || sTemp < TEMP_SENSOR_LOW_FAULT || sTemp > TEMP_SENSOR_HIGH_FAULT;
+
+  if (sensorFault && operationMode == AUTO)
+    setOperationMode(OFF);
 
   static bool prevSensorFault = false;
   if (sensorFault != prevSensorFault) //Only update display when value changes, otherwise nextion lags
@@ -747,12 +750,12 @@ void updatePage4(void *ptr) {
   displayUpdateState();
 
   //Clear waveform
-//  Serial2.write("cle 2,0\xFF\xFF\xFF");
-//  delay(50);
-//  Serial2.write("cle 2,1\xFF\xFF\xFF");
-//  delay(50);
-//  Serial2.write("cle 2,2\xFF\xFF\xFF");
-//  waveform.updateWaveform();
+  //  Serial2.write("cle 2,0\xFF\xFF\xFF");
+  //  delay(50);
+  //  Serial2.write("cle 2,1\xFF\xFF\xFF");
+  //  delay(50);
+  //  Serial2.write("cle 2,2\xFF\xFF\xFF");
+  //  waveform.updateWaveform();
   //waveform stuff
   //waterTempGrapher.displayWaveform();
   //solarTempGrapher.displayWaveform();
@@ -806,9 +809,9 @@ void displayUpdateHeaterOn() {
   tInfoHeaterOn.Set_font_color_pco(heaterOn ? greenPco : redPco);
 }
 
-void displayUpdateClock(bool force){
+void displayUpdateClock(bool force) {
   static int prevMinutes = 0;
-  if(force || minute() != prevMinutes){
+  if (force || minute() != prevMinutes) {
     char text[6];
     sprintf(text, "%2d:%02d", hour(), minute());
     tTime.setText(text);
@@ -818,7 +821,7 @@ void displayUpdateClock(bool force){
 
 // Radio button callbacks
 
-void rOffPushCallback(void *ptr){
+void rOffPushCallback(void *ptr) {
   setOperationMode(OFF);
 }
 
@@ -904,6 +907,7 @@ void setMinTemp(int temp) {
 
 /*Set operation mode and update display accordingly*/
 void setOperationMode(OperationMode mode) {
+  if (mode == AUTO && sensorFault) return;
   switch (mode) {
     case OFF:
       state = NONE;
