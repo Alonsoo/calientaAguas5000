@@ -21,9 +21,7 @@ enum OperationMode {
 
 enum State {
   NONE,
-  //DECIDE,
   STANDBY,
-  //PROBE,
   HEAT_AUTO,
   TIMER_ON
 };
@@ -375,7 +373,7 @@ NexTouch *nex_listen_list[] = {
 
 
 OperationMode operationMode;
-State state = STANDBY;
+State state = NONE;
 
 NumericSetting tempTolerance = NumericSetting(&nTempTol, 0); //{2, nTempTol, 0}; // For hysteresis
 NumericSetting solarTempTolerance = NumericSetting(&nSolarTol, 1); //{2, nSolarTol, 1}; // For hysteresis
@@ -384,7 +382,7 @@ NumericSetting solarTempOffset = NumericSetting(&nSolarOffset, 2); //{2, nSolarO
 const int SOLAR_TEMP_LOWER_THRESHOLD = 25;
 //TODO: decide actual fault temperatures
 const int TEMP_SENSOR_LOW_FAULT = -1;
-const int TEMP_SENSOR_HIGH_FAULT = 49;
+const int TEMP_SENSOR_HIGH_FAULT = 60;
 
 int targetTemp;
 int waterTemp;
@@ -410,8 +408,6 @@ long waterTempRecordedAt = -1; // initialize to -1 to ensure water temp readig i
 //long waterTempReadingLifetime = 8 * 1000UL; //10 * 60 * 1000UL; // 10 minutes
 NumericSetting waterTempReadingLifetime = NumericSetting(&nStandbyTime, 4);
 
-//bool timerStarted = false;
-//long timerStartedAt;
 
 NumericSetting *settings[] = {
   &tempTolerance,
@@ -462,7 +458,6 @@ void setup() {
   pinMode(TIMER_BUTTON_PIN, INPUT_PULLUP);
   pinMode(SOLAR_VALVE_PIN, OUTPUT);
   pinMode(PUMP_PIN, OUTPUT);
-  pinMode(13, INPUT);
 
   waveform.graphers[0] = &waterTempGrapher;
   waveform.graphers[1] = &solarTempGrapher;
@@ -567,9 +562,7 @@ void loop() {
         timerStartedAt = now();
 
       //Wait for timer to finish and set Op Mode to OFF
-      //TODO: replace timer conversion on production
-      //if(now() - timerStartedAt > hrToSec(timerOnTime.getVal())){
-      if (now() - timerStartedAt > timerOnTime.getVal()) {
+      if (now() - timerStartedAt > hrToSec(timerOnTime.getVal())) {
         setOperationMode(OFF);
         timerStartedAt = 0; //reset timer
       }
@@ -586,7 +579,6 @@ void loop() {
 
 
   //If conditions are right and water temperature reading is stale, then override pump to on so we can probe the water temperature later
-  //TODO: RTC add nightime conditioning
   bool isNightime = hour() >= 20 || hour() < 7;
   if (operationMode == AUTO && solarTemp > SOLAR_TEMP_LOWER_THRESHOLD && waterTempReadingIsStale() && !isNightime)
     pumpOn = true;
@@ -601,7 +593,6 @@ void loop() {
 
   long pumpOnFor = pumpOn ? now() - pumpTurnedOnAt : 0;
 
-  //TODO: change time convertion for production
   if (pumpOn && pumpOnFor > probeTime.getVal())
     updateWaterTemp();
 
@@ -666,22 +657,23 @@ void updateWaterTemp() {
   waterTemp = readTempSensor(WATER_TEMP_SENSOR_PIN);
   waterTempRecordedAt = now();
 
-  TimedReading reading = {waterTemp, now()};
-  waterTempGrapher.registerData(reading);
+  //TimedReading reading = {waterTemp, now()};
+  //waterTempGrapher.registerData(reading);
   //When we upgrade waterTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
 
 bool waterTempReadingIsStale() {
   long waterTempReadingAge = now() - waterTempRecordedAt;
-  return waterTempReadingAge > waterTempReadingLifetime.getVal() || waterTempRecordedAt == -1;
+  return waterTempReadingAge > minToSec(waterTempReadingLifetime.getVal()) || waterTempRecordedAt == -1;
 }
 
 void updateSolarTemp() {
   solarTemp = readTempSensor(SOLAR_TEMP_SENSOR_PIN);
 
-  TimedReading reading = {solarTemp, now()};
-  solarTempGrapher.registerData(reading);
-  //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
+  //TimedReading reading = {solarTemp, now()};
+  //solarTempGrapher.registerData(reading);
+  //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates ev\
+  ery frame
 }
 
 float readTempSensor(int pin) {
@@ -908,6 +900,7 @@ void setMinTemp(int temp) {
 /*Set operation mode and update display accordingly*/
 void setOperationMode(OperationMode mode) {
   if (mode == AUTO && sensorFault) return;
+  
   switch (mode) {
     case OFF:
       state = NONE;
