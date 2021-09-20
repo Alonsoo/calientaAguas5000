@@ -636,15 +636,15 @@ void loop() {
 const int BUTTON_BOUNCE_COOLDOWN = 100; //ms
 
 void timerButtonListen() {
-  static int prevVal = LOW;
+  static int prevVal = HIGH;
   static long switchedOnAt = 0;
 
   int val = digitalRead(TIMER_BUTTON_PIN);
-  if (val == HIGH && prevVal == LOW && (millis() - switchedOnAt) > BUTTON_BOUNCE_COOLDOWN) {
-    if (operationMode == OFF) setOperationMode(TIMER);
-    if (operationMode == TIMER) setOperationMode(OFF);
-    switchedOnAt = millis();
+  if (val == LOW && prevVal == HIGH && (millis() - switchedOnAt) > BUTTON_BOUNCE_COOLDOWN) {
     Serial.println("Button Pressed");
+    if (operationMode == OFF) setOperationMode(TIMER);
+    else if (operationMode == TIMER) setOperationMode(OFF);
+    switchedOnAt = millis();
   }
   prevVal = val;
 }
@@ -679,6 +679,10 @@ void updateSolarTemp() {
 float readTempSensor(int pin) {
   int val = analogRead(pin);
   float volt = fmap(val, 0, 1023, 0, 5);
+  Serial.print("volt: ");
+  Serial.println(volt);
+  if (volt < 1.0) return -1000; //manually triger sensor fault
+  if (volt > 4.99) return 1000; //manually triger sensor fault
   float res =  (5 * 10000L) / volt - 10000L ;
   float temp = 238 - 23.1 * log(res);
   return temp;
