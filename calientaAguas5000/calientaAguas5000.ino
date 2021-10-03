@@ -386,7 +386,8 @@ NumericSetting tempTolerance = NumericSetting(&nTempTol, 0); //{2, nTempTol, 0};
 NumericSetting solarTempTolerance = NumericSetting(&nSolarTol, 1); //{2, nSolarTol, 1}; // For hysteresis
 NumericSetting solarTempOffset = NumericSetting(&nSolarOffset, 2); //{2, nSolarOffset, 2}; // Solar wont turn on unless solar temperature is solarTempOffset degrees above water temp
 
-const int SOLAR_TEMP_LOWER_THRESHOLD = 25;
+const int SOLAR_TEMP_LOWER_THRESHOLD = 27;
+const int SOLAR_TEMP_THRESHOLD_TOLERANCE = 1; //for hysteresis
 const int TEMP_SENSOR_LOW_FAULT = -1;
 const int TEMP_SENSOR_HIGH_FAULT = 70;
 
@@ -545,7 +546,7 @@ void loop() {
 
   switch (state) {
     case STANDBY:
-      if (!waterTempReadingIsStale() && waterTemp < targetTemp - tempTolerance.getVal())
+      if (!isNightime() && !waterTempReadingIsStale() && waterTemp < targetTemp - tempTolerance.getVal())
         state = HEAT_AUTO;
       else {
         solarOn = false;
@@ -567,7 +568,7 @@ void loop() {
 
       pumpOn = solarOn || heaterOn;
 
-      if (!waterTempReadingIsStale() && waterTemp > targetTemp + tempTolerance.getVal())
+      if (isNightime() || (!waterTempReadingIsStale() && waterTemp > targetTemp + tempTolerance.getVal()))
         state = STANDBY;
       break;
 
@@ -596,8 +597,12 @@ void loop() {
 
 
   //If conditions are right and water temperature reading is stale, then override pump to ON so we can probe the water temperature later
-  bool isNightime = (hour() >= 20 || hour() < 7) && timeStatus() == timeSet; // if rtc is not working, assume its daytime
-  if (operationMode == AUTO && solarTemp > SOLAR_TEMP_LOWER_THRESHOLD && waterTempReadingIsStale() && !isNightime)
+  //bool isNightime = (hour() >= 20 || hour() < 7) && timeStatus() == timeSet; // if rtc is not working, assume its daytime
+  static bool solarTempAboveThreshold = true;
+  if(solarTemp >= SOLAR_TEMP_LOWER_THRESHOLD + SOLAR_TEMP_THRESHOLD_TOLERANCE) solarTempAboveThreshold = true;
+  if(solarTemp <= SOLAR_TEMP_LOWER_THRESHOLD - SOLAR_TEMP_THRESHOLD_TOLERANCE) solarTempAboveThreshold = false;
+  
+  if (operationMode == AUTO && solarTempAboveThreshold && waterTempReadingIsStale() && !isNightime())
     pumpOn = true;
 
 
@@ -662,10 +667,16 @@ void timerButtonListen() {
   if (val == LOW && prevVal == HIGH && (millis() - switchedOnAt) > BUTTON_BOUNCE_COOLDOWN) {
     Serial.println("Button Pressed");
     if (operationMode == OFF) setOperationMode(TIMER);
-    else if (operationMode == TIMER) setOperationMode(OFF);
+    else if (operationMode == TIMER || operationMode == AUTO) setOperationMode(OFF);
     switchedOnAt = millis();
   }
   prevVal = val;
+}
+
+
+// Nightime/Daytime
+bool isNightime(){
+  return (hour() >= 20 || hour() < 7) && timeStatus() == timeSet; // if rtc is not working, assume its daytime
 }
 
 
@@ -909,16 +920,9 @@ void numericSettingPlusCallback(void *ptr) {
 
 // Time callbacks
 void bHourMinusPushCalback(void  *ptr) {
-  //tmElements_t tm;
-  //tm.Hour = hour() == 0 ? 23 : hour() - 1;
-  //tm.Minute = minute();
   int hours = hour() == 0 ? 23 : hour() - 1;
   setTime(hours, minute(), second(), day(), month(), year());
   RTC.set(now());
-//  if (!RTC.write(tm)) {
-//    Serial.println("couldn't set hour");
-//  }
-//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
 void bHourPlusPushCalback(void  *ptr) {
@@ -927,41 +931,17 @@ void bHourPlusPushCalback(void  *ptr) {
   
   setTime(hour() + 1, minute(), second(), day(), month(), year());
   RTC.set(now());
-
-  
-//  tmElements_t tm;
-//  tm.Hour = hour() + 1;
-//  tm.Minute = minute();
-//  if (!RTC.write(tm)) {
-//    Serial.println("couldn't set hour");
-//  }
-//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
 void bMinuteMinusPushCalback(void  *ptr) {
-  
   int minutes = minute() == 0 ? 59 : minute() - 1;
   setTime(hour(), minutes, second(), day(), month(), year());
   RTC.set(now());
-//  tmElements_t tm;
-//  tm.Hour = hour();
-//  tm.Minute = minute() == 0 ? 59 : minute() - 1;
-//  if (!RTC.write(tm)) {
-//    Serial.println("couldn't set minute");
-//  }
-//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
 void bMinutePlusPushCalback(void  *ptr) { 
   setTime(hour(), minute() + 1, second(), day(), month(), year());
   RTC.set(now());
-//  tmElements_t tm;
-//  tm.Hour = hour();
-//  tm.Minute = minute() + 1;
-//  if (!RTC.write(tm)) {
-//    Serial.println("couldn't set minute");
-//  }
-//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
 
