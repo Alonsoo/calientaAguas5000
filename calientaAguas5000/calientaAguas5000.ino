@@ -5,7 +5,7 @@
 #include "Nextion.h"
 
 
-const int EEPROM_CHUNK_SIZE = 32;
+const int EEPROM_CHUNK_SIZE = 4;
 
 const int TIMER_BUTTON_PIN = 4;
 const int WATER_TEMP_SENSOR_PIN = 1;
@@ -387,7 +387,6 @@ NumericSetting solarTempTolerance = NumericSetting(&nSolarTol, 1); //{2, nSolarT
 NumericSetting solarTempOffset = NumericSetting(&nSolarOffset, 2); //{2, nSolarOffset, 2}; // Solar wont turn on unless solar temperature is solarTempOffset degrees above water temp
 
 const int SOLAR_TEMP_LOWER_THRESHOLD = 25;
-//TODO: decide actual fault temperatures
 const int TEMP_SENSOR_LOW_FAULT = -1;
 const int TEMP_SENSOR_HIGH_FAULT = 70;
 
@@ -459,6 +458,9 @@ Waveform waveform = Waveform();
 void setup() {
   Serial.begin(9600);
 
+  Serial.print("size of float: ");
+  Serial.println(sizeof(float));
+
   setSyncProvider(RTC.get);   // the function to get the time from the RTC
   if (timeStatus() != timeSet)
     Serial.println("Unable to sync with the RTC");
@@ -501,7 +503,7 @@ void setup() {
   bStandbyTimePlus.attachPush(numericSettingPlusCallback, &waterTempReadingLifetime);
   bTimerOnTimeMinus.attachPush(numericSettingMinusCallback, &timerOnTime);
   bTimerOnTimePlus.attachPush(numericSettingPlusCallback, &timerOnTime);
-  
+
   bHourMinus.attachPush(bHourMinusPushCalback);
   bHourPlus.attachPush(bHourPlusPushCalback);
   bMinuteMinus.attachPush(bMinuteMinusPushCalback);
@@ -570,7 +572,7 @@ void loop() {
       break;
 
     case TIMER_ON:
-      //turn pump on and choose how to heat it
+      //turn pump on for timerOnTime hours and choose how to heat it
       solarOn = solarEnabled;
       pumpOn = true;
 
@@ -589,15 +591,12 @@ void loop() {
       //turn everything off
       solarOn = false;
       pumpOn = false;
-      //timerStarted = false;
       break;
   }
 
 
   //If conditions are right and water temperature reading is stale, then override pump to ON so we can probe the water temperature later
-  bool isNightime = (hour() >= 20 || hour() < 7) && timeStatus() == timeSet; // if clock is not working, assume its daytime
-  Serial.print("Is Daytime: ");
-  Serial.println(!isNightime);
+  bool isNightime = (hour() >= 20 || hour() < 7) && timeStatus() == timeSet; // if rtc is not working, assume its daytime
   if (operationMode == AUTO && solarTemp > SOLAR_TEMP_LOWER_THRESHOLD && waterTempReadingIsStale() && !isNightime)
     pumpOn = true;
 
@@ -646,6 +645,7 @@ void loop() {
   //      Serial.println("done");
   //    }
 
+  logData();
   delay(50);
 }
 
@@ -672,7 +672,7 @@ void timerButtonListen() {
 
 // Temperature Sensor Reading and Fault Checking
 
-void updateWaterSensor(){
+void updateWaterSensor() {
   waterSensor = readTempSensor(WATER_TEMP_SENSOR_PIN);
   //When we upgrade waterSensor to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
@@ -712,9 +712,6 @@ float readTempSensor(int pin) {
 }
 
 void checkSensorFaults() {
-  //int wTemp = readTempSensor(WATER_TEMP_SENSOR_PIN);
-  //int sTemp = readTempSensor(SOLAR_TEMP_SENSOR_PIN);
-
   sensorFault = waterSensor < TEMP_SENSOR_LOW_FAULT || waterSensor > TEMP_SENSOR_HIGH_FAULT || solarTemp < TEMP_SENSOR_LOW_FAULT || solarTemp > TEMP_SENSOR_HIGH_FAULT;
 
   if (sensorFault && operationMode == AUTO)
@@ -787,7 +784,7 @@ void displayUpdateWaterTemp() {
 }
 
 void displayUpdateInfoWaterTemp() {
-  //If theres a sensor fault, show watever is comming directly from the sensor, if not show last recorded waterTemperature
+  //If there's a sensor fault, show watever is comming directly from the sensor, if not show last recorded waterTemperature
   String s = sensorFault ? (waterSensor == 1000 ? "High" : waterSensor == -1000 ? "Low" : String(waterSensor)) : String(waterTemp);
   tInfoWaterTemp.setText(s.c_str());
 }
@@ -911,46 +908,60 @@ void numericSettingPlusCallback(void *ptr) {
 }
 
 // Time callbacks
-void bHourMinusPushCalback(void  *ptr){
-  tmElements_t tm;
-  tm.Hour = hour() == 0 ? 23 : hour() - 1;
-  tm.Minute = minute();
-  if (!RTC.write(tm)) {
-     Serial.println("couldn't set hour");
-  }
-  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+void bHourMinusPushCalback(void  *ptr) {
+  //tmElements_t tm;
+  //tm.Hour = hour() == 0 ? 23 : hour() - 1;
+  //tm.Minute = minute();
+  int hours = hour() == 0 ? 23 : hour() - 1;
+  setTime(hours, minute(), second(), day(), month(), year());
+  RTC.set(now());
+//  if (!RTC.write(tm)) {
+//    Serial.println("couldn't set hour");
+//  }
+//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
-void bHourPlusPushCalback(void  *ptr){
+void bHourPlusPushCalback(void  *ptr) {
   Serial.println("hour plus");
   Serial.println(timeStatus() == timeSet);
-  tmElements_t tm;
-  tm.Hour = hour() + 1;
-  tm.Minute = minute();
-  if (!RTC.write(tm)) {
-     Serial.println("couldn't set hour");
-  }
-  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+  
+  setTime(hour() + 1, minute(), second(), day(), month(), year());
+  RTC.set(now());
+
+  
+//  tmElements_t tm;
+//  tm.Hour = hour() + 1;
+//  tm.Minute = minute();
+//  if (!RTC.write(tm)) {
+//    Serial.println("couldn't set hour");
+//  }
+//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
-void bMinuteMinusPushCalback(void  *ptr){
-  tmElements_t tm;
-  tm.Hour = hour();
-  tm.Minute = minute() == 0 ? 59 : minute() - 1;
-  if (!RTC.write(tm)) {
-     Serial.println("couldn't set minute");
-  }
-  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+void bMinuteMinusPushCalback(void  *ptr) {
+  
+  int minutes = minute() == 0 ? 59 : minute() - 1;
+  setTime(hour(), minutes, second(), day(), month(), year());
+  RTC.set(now());
+//  tmElements_t tm;
+//  tm.Hour = hour();
+//  tm.Minute = minute() == 0 ? 59 : minute() - 1;
+//  if (!RTC.write(tm)) {
+//    Serial.println("couldn't set minute");
+//  }
+//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
-void bMinutePlusPushCalback(void  *ptr){
-  tmElements_t tm;
-  tm.Hour = hour();
-  tm.Minute = minute() + 1;
-  if (!RTC.write(tm)) {
-     Serial.println("couldn't set minute");
-  }
-  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+void bMinutePlusPushCalback(void  *ptr) { 
+  setTime(hour(), minute() + 1, second(), day(), month(), year());
+  RTC.set(now());
+//  tmElements_t tm;
+//  tm.Hour = hour();
+//  tm.Minute = minute() + 1;
+//  if (!RTC.write(tm)) {
+//    Serial.println("couldn't set minute");
+//  }
+//  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
 }
 
 
@@ -981,7 +992,7 @@ void setMinTemp(int temp) {
 /*Set operation mode and update display accordingly*/
 void setOperationMode(OperationMode mode) {
   if (mode == AUTO && sensorFault) mode = OFF;
-  
+
   switch (mode) {
     case OFF:
       state = NONE;
@@ -1033,4 +1044,83 @@ long minToSec(int minutes) {
 
 long hrToSec(int hrs) {
   return hrs * 60 * 60UL;
+}
+
+
+
+// Test logging
+const int START_ADDRESS = 80;
+//const int CHUNK_SIZE = 4;
+//const int CHUNKS_PER_LOG = 8;
+const int LOG_INTERVAL = 10; //10; // MINUTES
+const int END_MARKER = 42;
+
+int pointsLogged = 0;
+
+struct LogData {
+  int hours;
+  int minutes;
+  State state;
+  int solarTemp;
+  int waterSensor;
+  int waterTemp;
+  bool pumpOn;
+  bool solarOn;
+};
+
+void logData() {
+  if (pointsLogged > 24*6) return;// Lets not use all of the arduino's memory shall we
+
+  static long lastLoggedAt = 0;
+  if (now() - lastLoggedAt > minToSec(LOG_INTERVAL) || lastLoggedAt == 0){
+    int address = START_ADDRESS + pointsLogged * sizeof(LogData);
+    LogData data = {hour(), minute(), state, solarTemp, waterSensor, waterTemp, pumpOn, solarOn};
+
+    EEPROM.put(address, data);
+    EEPROM.put(address + sizeof(LogData), END_MARKER);
+
+    pointsLogged++;
+    lastLoggedAt = now();
+    printLogData();
+  }
+
+}
+
+
+void printLogData() {
+  for (int i = 0; i < 1000; i++) {
+    int address = START_ADDRESS + i * sizeof(LogData);
+
+    int marker;
+    EEPROM.get(address, marker);
+    if (marker == END_MARKER) break;
+
+    LogData data;
+    EEPROM.get(address, data);
+
+    String stateString;
+    switch (data.state) {
+      case STANDBY: stateString = "Standby"; break;
+      case HEAT_AUTO: stateString = "Heat A."; break;
+      case TIMER_ON: stateString = "Timer On"; break;
+      case NONE: stateString = "OFF"; break;
+    }
+
+    Serial.print(data.hours);
+    Serial.print(":");
+    Serial.print(data.minutes);
+    Serial.print("  State: ");
+    Serial.print(stateString);
+    Serial.print("  Solar temp: ");
+    Serial.print(data.solarTemp);
+    Serial.print("  Water sensor: ");
+    Serial.print(data.waterSensor);
+    Serial.print("  Water temp: ");
+    Serial.print(data.waterTemp);
+    Serial.print("  Pump on: ");
+    Serial.print(data.pumpOn);
+    Serial.print("  Solar on: ");
+    Serial.println(data.solarOn);
+  }
+  Serial.println("");
 }
