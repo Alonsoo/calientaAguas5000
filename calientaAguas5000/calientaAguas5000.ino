@@ -38,13 +38,11 @@ struct NumericSetting {
   }
 
   void setVal(int newValue) {
-    //value = newValue;
     nexNumber->setValue(newValue);
     EEPROM.put(eeAddress, newValue);
   }
 
   int getVal() {
-    //return value;
     int val;
     EEPROM.get(eeAddress, val);
     return (val);
@@ -317,18 +315,23 @@ NexButton bStandbyTimePlus = NexButton(3, 5, "bStandbyTimeP");
 NexButton bTimerOnTimeMinus = NexButton(3, 8, "bTimerOnTimeM");
 NexButton bTimerOnTimePlus = NexButton(3, 10, "bTimerOnTimeP");
 
+NexButton bHourMinus = NexButton(3, 13, "bHourM");
+NexButton bHourPlus = NexButton(3, 12, "bHourP");
+NexButton bMinuteMinus = NexButton(3, 16, "bMinuteM");
+NexButton bMinutePlus = NexButton(3, 15, "bMinuteP");
+
 NexNumber nTempTol = NexNumber(1, 4, "nTempTol");
 NexNumber nSolarTol = NexNumber(1, 7, "nSolarTol");
 NexNumber nSolarOffset = NexNumber(1, 11, "nSolarOffset");
 NexNumber nProbeTime = NexNumber(1, 15, "nProbeTime");
 NexNumber nStandbyTime = NexNumber(3, 4, "nStandbyTime");
 NexNumber nTimerOnTime = NexNumber(3, 9, "nTimerOnTime");
-
-NexText tTime = NexText(3, 12, "tTime");
+NexText tHour = NexText(3, 14, "tHour");
+NexText tMinute = NexText(3, 17, "tMinute");
 
 // Info Page Components
-NexNumber nInfoWaterTemp = NexNumber(4, 23, "nInfoWaterTemp");
-NexNumber nInfoSolarTemp = NexNumber(4, 26, "nInfoSolarTemp");
+NexText tInfoWaterTemp = NexText(4, 25, "tInfoWaterTemp");
+NexText tInfoSolarTemp = NexText(4, 26, "tInfoSolarTemp");
 NexText tInfoState = NexText(4, 19, "tInfoState");
 NexText tInfoPumpOn = NexText(4, 20, "tInfoPumpOn");
 NexText tInfoSolarOn = NexText(4, 21, "tInfoSolarOn");
@@ -368,6 +371,10 @@ NexTouch *nex_listen_list[] = {
   &bStandbyTimePlus,
   &bTimerOnTimeMinus,
   &bTimerOnTimePlus,
+  &bHourMinus,
+  &bHourPlus,
+  &bMinuteMinus,
+  &bMinutePlus,
   NULL
 };
 
@@ -382,9 +389,10 @@ NumericSetting solarTempOffset = NumericSetting(&nSolarOffset, 2); //{2, nSolarO
 const int SOLAR_TEMP_LOWER_THRESHOLD = 25;
 //TODO: decide actual fault temperatures
 const int TEMP_SENSOR_LOW_FAULT = -1;
-const int TEMP_SENSOR_HIGH_FAULT = 60;
+const int TEMP_SENSOR_HIGH_FAULT = 70;
 
 int targetTemp;
+int waterSensor;
 int waterTemp;
 int solarTemp;
 
@@ -423,6 +431,7 @@ NumericSetting *settings[] = {
 
 // Value Change Listeners
 struct ChangeListener<int> waterTempCL = ChangeListener<int>(&waterTemp, waterTemp, displayUpdateWaterTemp);
+struct ChangeListener<int> waterSensorCL = ChangeListener<int>(&waterSensor, waterSensor, displayUpdateInfoWaterTemp);
 struct ChangeListener<int> solarTempCL = ChangeListener<int>(&solarTemp, solarTemp, displayUpdateSolarTemp);
 struct ChangeListener<State> stateCL = ChangeListener<State>(&state, state, displayUpdateState);
 struct ChangeListener<bool> pumpOnCL = ChangeListener<bool>(&pumpOn, pumpOn, displayUpdatePumpOn);
@@ -432,6 +441,7 @@ struct ChangeListener<bool> heaterOnCL = ChangeListener<bool>(&heaterOn, heaterO
 // Register objects to the change listen list
 struct ChangeListener_base *changeListenList[] = {
   &waterTempCL,
+  &waterSensorCL,
   &solarTempCL,
   &stateCL,
   &pumpOnCL,
@@ -491,6 +501,11 @@ void setup() {
   bStandbyTimePlus.attachPush(numericSettingPlusCallback, &waterTempReadingLifetime);
   bTimerOnTimeMinus.attachPush(numericSettingMinusCallback, &timerOnTime);
   bTimerOnTimePlus.attachPush(numericSettingPlusCallback, &timerOnTime);
+  
+  bHourMinus.attachPush(bHourMinusPushCalback);
+  bHourPlus.attachPush(bHourPlusPushCalback);
+  bMinuteMinus.attachPush(bMinuteMinusPushCalback);
+  bMinutePlus.attachPush(bMinutePlusPushCalback);
 
   setMaxTemp(45);
   setMinTemp(25);
@@ -515,6 +530,7 @@ void loop() {
 
   checkSensorFaults();
   updateSolarTemp();
+  updateWaterSensor();
   timerButtonListen();
 
   displayUpdateClock(false);
@@ -578,13 +594,15 @@ void loop() {
   }
 
 
-  //If conditions are right and water temperature reading is stale, then override pump to on so we can probe the water temperature later
-  bool isNightime = hour() >= 20 || hour() < 7;
+  //If conditions are right and water temperature reading is stale, then override pump to ON so we can probe the water temperature later
+  bool isNightime = (hour() >= 20 || hour() < 7) && timeStatus() == timeSet; // if clock is not working, assume its daytime
+  Serial.print("Is Daytime: ");
+  Serial.println(!isNightime);
   if (operationMode == AUTO && solarTemp > SOLAR_TEMP_LOWER_THRESHOLD && waterTempReadingIsStale() && !isNightime)
     pumpOn = true;
 
 
-  // If pump has been on long enough, update water temperature
+  // If pump has been ON long enough, update water temperature
   static long pumpTurnedOnAt = 0;
   static bool prevPumpOn = false;
 
@@ -604,8 +622,8 @@ void loop() {
 
 
   //Graph solarOn value
-  TimedReading solarOnReading = {solarOn, now()};
-  solarOnGrapher.registerData(solarOnReading);
+  //TimedReading solarOnReading = {solarOn, now()};
+  //solarOnGrapher.registerData(solarOnReading);
 
 
   //Listen for changes to trigger display updates and update change listeners
@@ -632,6 +650,7 @@ void loop() {
 }
 
 
+
 // Timer Button
 const int BUTTON_BOUNCE_COOLDOWN = 100; //ms
 
@@ -653,8 +672,13 @@ void timerButtonListen() {
 
 // Temperature Sensor Reading and Fault Checking
 
+void updateWaterSensor(){
+  waterSensor = readTempSensor(WATER_TEMP_SENSOR_PIN);
+  //When we upgrade waterSensor to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
+}
+
 void updateWaterTemp() {
-  waterTemp = readTempSensor(WATER_TEMP_SENSOR_PIN);
+  waterTemp = waterSensor; //readTempSensor(WATER_TEMP_SENSOR_PIN);
   waterTempRecordedAt = now();
 
   //TimedReading reading = {waterTemp, now()};
@@ -672,27 +696,26 @@ void updateSolarTemp() {
 
   //TimedReading reading = {solarTemp, now()};
   //solarTempGrapher.registerData(reading);
-  //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates ev\
-  ery frame
+  //When we upgrade solarTemp to float remember to always truncate it to one decimal place so sensor noise wont trigger display updates every frame
 }
 
 float readTempSensor(int pin) {
   int val = analogRead(pin);
   float volt = fmap(val, 0, 1023, 0, 5);
-  Serial.print("volt: ");
-  Serial.println(volt);
-  if (volt < 1.0) return -1000; //manually triger sensor fault
-  if (volt > 4.99) return 1000; //manually triger sensor fault
-  float res =  (5 * 10000L) / volt - 10000L ;
+  //Serial.print("volt: ");
+  //Serial.println(volt);
+  if (volt == 0) return -1000; //manually trigger sensor fault
+  if (volt > 4.9) return 1000; //manually trigger sensor fault
+  float res = (5 * 10000L) / volt - 10000L ;
   float temp = 238 - 23.1 * log(res);
   return temp;
 }
 
 void checkSensorFaults() {
-  int wTemp = readTempSensor(1);
-  int sTemp = readTempSensor(0);
+  //int wTemp = readTempSensor(WATER_TEMP_SENSOR_PIN);
+  //int sTemp = readTempSensor(SOLAR_TEMP_SENSOR_PIN);
 
-  sensorFault = wTemp < TEMP_SENSOR_LOW_FAULT || wTemp > TEMP_SENSOR_HIGH_FAULT || sTemp < TEMP_SENSOR_LOW_FAULT || sTemp > TEMP_SENSOR_HIGH_FAULT;
+  sensorFault = waterSensor < TEMP_SENSOR_LOW_FAULT || waterSensor > TEMP_SENSOR_HIGH_FAULT || solarTemp < TEMP_SENSOR_LOW_FAULT || solarTemp > TEMP_SENSOR_HIGH_FAULT;
 
   if (sensorFault && operationMode == AUTO)
     setOperationMode(OFF);
@@ -737,8 +760,8 @@ void updatePage3(void *ptr) {
 
 void updatePage4(void *ptr) {
   currentPage = 4;
-  nInfoWaterTemp.setValue(waterTemp);
-  nInfoSolarTemp.setValue(solarTemp);
+  displayUpdateWaterTemp();
+  displayUpdateSolarTemp();
 
   displayUpdatePumpOn();
   displayUpdateSolarOn();
@@ -760,11 +783,19 @@ void updatePage4(void *ptr) {
 
 void displayUpdateWaterTemp() {
   nWaterTemp.setValue(waterTemp);
-  nInfoWaterTemp.setValue(waterTemp);
+  displayUpdateInfoWaterTemp();
 }
 
+void displayUpdateInfoWaterTemp() {
+  //If theres a sensor fault, show watever is comming directly from the sensor, if not show last recorded waterTemperature
+  String s = sensorFault ? (waterSensor == 1000 ? "High" : waterSensor == -1000 ? "Low" : String(waterSensor)) : String(waterTemp);
+  tInfoWaterTemp.setText(s.c_str());
+}
+
+
 void displayUpdateSolarTemp() {
-  nInfoSolarTemp.setValue(solarTemp);
+  String s = solarTemp == 1000 ? "High" : solarTemp == -1000 ? "Low" : String(solarTemp);
+  tInfoSolarTemp.setText(s.c_str());
 }
 
 void displayUpdateSensorFault() {
@@ -777,9 +808,7 @@ void displayUpdateSensorFault() {
 void displayUpdateState() {
   String stateString;
   switch (state) {
-    //case DECIDE: stateString = "Decide"; break;
     case STANDBY: stateString = "Standby"; break;
-    //case PROBE: stateString = "Probe"; break;
     case HEAT_AUTO: stateString = "Heat A."; break;
     case TIMER_ON: stateString = "Timer On"; break;
     case NONE: stateString = "OFF"; break;
@@ -807,12 +836,17 @@ void displayUpdateHeaterOn() {
 
 void displayUpdateClock(bool force) {
   static int prevMinutes = 0;
-  if (force || minute() != prevMinutes) {
-    char text[6];
-    sprintf(text, "%2d:%02d", hour(), minute());
-    tTime.setText(text);
+  static int prevHours = 0;
+  if (force || minute() != prevMinutes || hour() != prevHours) {
+    char sHours[3];
+    char sMinutes[3];
+    sprintf(sHours, "%2d", hour());
+    sprintf(sMinutes, "%02d", minute());
+    tHour.setText(sHours);
+    tMinute.setText(sMinutes);
   }
   prevMinutes = minute();
+  prevHours = hour();
 }
 
 // Radio button callbacks
@@ -876,6 +910,49 @@ void numericSettingPlusCallback(void *ptr) {
   //numericSetting->nexNumber->setValue(numericSetting->getVal());
 }
 
+// Time callbacks
+void bHourMinusPushCalback(void  *ptr){
+  tmElements_t tm;
+  tm.Hour = hour() == 0 ? 23 : hour() - 1;
+  tm.Minute = minute();
+  if (!RTC.write(tm)) {
+     Serial.println("couldn't set hour");
+  }
+  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+}
+
+void bHourPlusPushCalback(void  *ptr){
+  Serial.println("hour plus");
+  Serial.println(timeStatus() == timeSet);
+  tmElements_t tm;
+  tm.Hour = hour() + 1;
+  tm.Minute = minute();
+  if (!RTC.write(tm)) {
+     Serial.println("couldn't set hour");
+  }
+  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+}
+
+void bMinuteMinusPushCalback(void  *ptr){
+  tmElements_t tm;
+  tm.Hour = hour();
+  tm.Minute = minute() == 0 ? 59 : minute() - 1;
+  if (!RTC.write(tm)) {
+     Serial.println("couldn't set minute");
+  }
+  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+}
+
+void bMinutePlusPushCalback(void  *ptr){
+  tmElements_t tm;
+  tm.Hour = hour();
+  tm.Minute = minute() + 1;
+  if (!RTC.write(tm)) {
+     Serial.println("couldn't set minute");
+  }
+  setSyncProvider(RTC.get); // Force Time library to update system time from RTC
+}
+
 
 // Setters
 
@@ -903,7 +980,7 @@ void setMinTemp(int temp) {
 
 /*Set operation mode and update display accordingly*/
 void setOperationMode(OperationMode mode) {
-  if (mode == AUTO && sensorFault) return;
+  if (mode == AUTO && sensorFault) mode = OFF;
   
   switch (mode) {
     case OFF:
