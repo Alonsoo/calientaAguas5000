@@ -459,8 +459,6 @@ Waveform waveform = Waveform();
 void setup() {
   Serial.begin(9600);
 
-  Serial.print("size of float: ");
-  Serial.println(sizeof(float));
 
   setSyncProvider(RTC.get);   // the function to get the time from the RTC
   if (timeStatus() != timeSet)
@@ -650,7 +648,7 @@ void loop() {
   //      Serial.println("done");
   //    }
 
-  logData();
+  //logData(); //UNCOMMENT ONLY FOR TESTING. WE DONT WANT TO WEAR THE ARDUINOS MEMORY OFF
   delay(50);
 }
 
@@ -665,7 +663,7 @@ void timerButtonListen() {
 
   int val = digitalRead(TIMER_BUTTON_PIN);
   if (val == LOW && prevVal == HIGH && (millis() - switchedOnAt) > BUTTON_BOUNCE_COOLDOWN) {
-    Serial.println("Button Pressed");
+    //Serial.println("Button Pressed");
     if (operationMode == OFF) setOperationMode(TIMER);
     else if (operationMode == TIMER || operationMode == AUTO) setOperationMode(OFF);
     switchedOnAt = millis();
@@ -717,7 +715,7 @@ float readTempSensor(int pin) {
   //Serial.println(volt);
   if (volt == 0) return -1000; //manually trigger sensor fault
   if (volt > 4.9) return 1000; //manually trigger sensor fault
-  float res = (5 * 10000L) / volt - 10000L ;
+  float res = (volt * 10000L) / (5 -volt) ;
   float temp = 238 - 23.1 * log(res);
   return temp;
 }
@@ -926,8 +924,8 @@ void bHourMinusPushCalback(void  *ptr) {
 }
 
 void bHourPlusPushCalback(void  *ptr) {
-  Serial.println("hour plus");
-  Serial.println(timeStatus() == timeSet);
+  //Serial.println("hour plus");
+  //Serial.println(timeStatus() == timeSet);
   
   setTime(hour() + 1, minute(), second(), day(), month(), year());
   RTC.set(now());
@@ -1035,8 +1033,6 @@ const int START_ADDRESS = 80;
 const int LOG_INTERVAL = 10; //10; // MINUTES
 const int END_MARKER = 42;
 
-int pointsLogged = 0;
-
 struct LogData {
   int hours;
   int minutes;
@@ -1048,11 +1044,17 @@ struct LogData {
   bool solarOn;
 };
 
+int pointsLogged = 0;
+LogData prevLog;
+
 void logData() {
-  if (pointsLogged > 24*6) return;// Lets not use all of the arduino's memory shall we
+  if (pointsLogged > 250) return;// Lets not use all of the arduino's memory shall we
 
   static long lastLoggedAt = 0;
-  if (now() - lastLoggedAt > minToSec(LOG_INTERVAL) || lastLoggedAt == 0){
+
+  bool importantChange = state != prevLog.state || pumpOn != prevLog.pumpOn || solarOn != prevLog.solarOn;
+  
+  if (now() - lastLoggedAt > minToSec(LOG_INTERVAL) || lastLoggedAt == 0 || importantChange){
     int address = START_ADDRESS + pointsLogged * sizeof(LogData);
     LogData data = {hour(), minute(), state, solarTemp, waterSensor, waterTemp, pumpOn, solarOn};
 
@@ -1061,12 +1063,12 @@ void logData() {
 
     pointsLogged++;
     lastLoggedAt = now();
-    printLogData();
+    prevLog = data;
   }
 
 }
 
-
+//ONLY USE THIS FOR TESTING!!! SERIAL PRINT IS SLOW AND LEAVING THIS ON MAKES WHOLE SYSTEM LAG A LOT
 void printLogData() {
   for (int i = 0; i < 1000; i++) {
     int address = START_ADDRESS + i * sizeof(LogData);
